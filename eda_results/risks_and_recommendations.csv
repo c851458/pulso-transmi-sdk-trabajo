@@ -1,0 +1,10 @@
+category, finding, recommendation
+leakage,Random train-validation split can mix future and past,Use temporal split and backtesting
+availability,rain_mm and temperature_c may be known only retrospectively,Confirm feature availability at prediction time
+outliers,demand has 3315 IQR outliers,Review peaks by station time and events before any treatment
+special_values,demand=999 appears six times,Inspect neighboring timestamps and API semantics before deciding treatment
+multicollinearity,temperature_c versus temperature_forecast r=0.9824,Assess whether both variables are needed
+multicollinearity,rain_forecast versus rain_mm r=0.8226,Assess redundancy and production availability
+identifier,station_id is a text identifier with leading zeros,Keep categorical or entity semantics; do not treat as ordinal numeric
+station_effect,Demand means differ substantially by station,Build station-aware features or models
+production,Static historical cut differs from future incremental operation,Track cutoff cursor and monitor drift

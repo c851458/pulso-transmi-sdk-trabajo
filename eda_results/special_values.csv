@@ -1,0 +1,8 @@
+resource,variable,value,count,interpretation_status,notes
+observations,demand,999,6,needs_review,isolated positive value; API metadata does not define it as missing
+context,event_intensity,0,453,likely_real,zero event intensity is plausible
+context,rain_forecast,0,1569,likely_real,no rain forecast is plausible
+context,rain_mm,0,5,likely_real,no measured rain is plausible
+observations,demand,0,0,not_present,no zero demand values
+observations,demand,-1,0,not_present,no negative demand values
+observations,demand,9999,0,not_present,no 9999 values

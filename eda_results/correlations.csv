@@ -1,0 +1,16 @@
+group,variable_a,variable_b,pearson_r,notes
+observation_context,demand_mean_by_time,event_intensity,0.1452,temporal mean demand versus context
+observation_context,demand_mean_by_time,rain_forecast,-0.0126,temporal mean demand versus context
+observation_context,demand_mean_by_time,rain_mm,-0.0166,temporal mean demand versus context
+observation_context,demand_mean_by_time,temperature_c,0.3430,temporal mean demand versus context
+observation_context,demand_mean_by_time,temperature_forecast,0.3389,temporal mean demand versus context
+context_predictors,event_intensity,rain_forecast,-0.0140,possible predictor redundancy check
+context_predictors,event_intensity,rain_mm,-0.0212,possible predictor redundancy check
+context_predictors,event_intensity,temperature_c,0.0144,possible predictor redundancy check
+context_predictors,event_intensity,temperature_forecast,0.0180,possible predictor redundancy check
+context_predictors,rain_forecast,rain_mm,0.8226,strong correlation
+context_predictors,rain_forecast,temperature_c,0.0315,possible predictor redundancy check
+context_predictors,rain_forecast,temperature_forecast,0.0338,possible predictor redundancy check
+context_predictors,rain_mm,temperature_c,0.0357,possible predictor redundancy check
+context_predictors,rain_mm,temperature_forecast,0.0372,possible predictor redundancy check
+context_predictors,temperature_c,temperature_forecast,0.9824,very strong correlation

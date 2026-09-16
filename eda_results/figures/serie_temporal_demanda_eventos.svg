@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="760" viewBox="0 0 1200 760">
+<style>text{font-family:DejaVu Sans,Arial,sans-serif;fill:#17212b} .title{font-size:28px;font-weight:700} .subtitle{font-size:15px;fill:#52606d} .axis{font-size:13px;fill:#52606d} .label{font-size:14px;font-weight:600} .small{font-size:12px;fill:#52606d} .grid{stroke:#d9e2ec;stroke-width:1} .axisline{stroke:#52606d;stroke-width:1.5} </style>
+<rect width="100%" height="100%" fill="#f8fafc"/>
+<text x="60" y="52" class="title">Evolución temporal del corte</text>
+<text x="60" y="80" class="subtitle">Media diaria de demanda y de intensidad de eventos</text>
+<line x1="100" y1="625.0" x2="1140" y2="625.0" class="grid"/>
+<text x="88" y="630.0" text-anchor="end" class="axis">0</text>
+<line x1="100" y1="530.0" x2="1140" y2="530.0" class="grid"/>
+<text x="88" y="535.0" text-anchor="end" class="axis">88</text>
+<line x1="100" y1="435.0" x2="1140" y2="435.0" class="grid"/>
+<text x="88" y="440.0" text-anchor="end" class="axis">176</text>
+<line x1="100" y1="340.0" x2="1140" y2="340.0" class="grid"/>
+<text x="88" y="345.0" text-anchor="end" class="axis">263</text>
+<line x1="100" y1="245.0" x2="1140" y2="245.0" class="grid"/>
+<text x="88" y="250.0" text-anchor="end" class="axis">351</text>
+<line x1="100" y1="150.0" x2="1140" y2="150.0" class="grid"/>
+<text x="88" y="155.0" text-anchor="end" class="axis">439</text>
+<polyline points="100.0,312.4 123.6,226.3 147.3,218.4 170.9,212.8 194.5,213.3 218.2,217.1 241.8,308.5 265.5,302.0 289.1,185.2 312.7,218.3 336.4,226.9 360.0,205.8 383.6,228.4 407.3,306.2 430.9,292.9 454.5,190.4 478.2,210.4 501.8,221.5 525.5,215.6 549.1,230.3 572.7,298.8 596.4,304.0 620.0,216.3 643.6,203.7 667.3,220.2 690.9,210.9 714.5,221.6 738.2,305.0 761.8,297.4 785.5,227.7 809.1,211.5 832.7,186.2 856.4,223.7 880.0,224.8 903.6,306.6 927.3,301.9 950.9,227.9 974.5,212.7 998.2,203.8 1021.8,211.7 1045.5,194.6 1069.1,303.4 1092.7,301.2 1116.4,210.0 1140.0,201.6" fill="none" stroke="#0e7490" stroke-width="4"/>
+<text x="100.0" y="653" text-anchor="middle" class="axis">2026-07-26</text>
+<text x="620.0" y="653" text-anchor="middle" class="axis">2026-08-17</text>
+<text x="1140.0" y="653" text-anchor="middle" class="axis">2026-09-08</text>
+<rect x="96.0" y="625.0" width="8" height="0.0" fill="#d97706" fill-opacity="0.35"/>
+<rect x="119.6" y="625.0" width="8" height="0.0" fill="#d97706" fill-opacity="0.35"/>
+<rect x="143.3" y="625.0" width="8" height="0.0" fill="#d97706" fill-opacity="0.35"/>
+<rect x="166.9" y="625.0" width="8" height="0.0" fill="#d97706" fill-opacity="0.35"/>
+<rect x="190.5" y="625.0" width="8" height="0.0" fill="#d97706" fill-opacity="0.35"/>
+<rect x="214.2" y="625.0" width="8" height="0.0" fill="#d97706" fill-opacity="0.35"/>
+<rect x="237.8" y="625.0" width="8" height="0.0" fill="#d97706" fill-opacity="0.35"/>
+<rect x="261.5" y="625.0" width="8" height="0.0" fill="#d97706" fill-opacity="0.35"/>
+<rect x="285.1" y="570.3" width="8" height="54.7" fill="#d97706" fill-opacity="0.35"/>
+<rect x="308.7" y="617.6" width="8" height="7.4" fill="#d97706" fill-opacity="0.35"/>
+<rect x="332.4" y="625.0" width="8" height="0.0" fill="#d97706" fill-opacity="0.35"/>
+<rect x="356.0" y="625.0" width="8" height="0.0" fill="#d97706" fill-opacity="0.35"/>
+<rect x="379.6" y="625.0" width="8" height="0.0" fill="#d97706" fill-opacity="0.35"/>
+<rect x="403.3" y="625.0" width="8" height="0.0" fill="#d97706" fill-opacity="0.35"/>
+<rect x="426.9" y="625.0" width="8" height="0.0" fill="#d97706" fill-opacity="0.35"/>
+<rect x="450.5" y="586.4" width="8" height="38.6" fill="#d97706" fill-opacity="0.35"/>
+<rect x="474.2" y="623.7" width="8" height="1.3" fill="#d97706" fill-opacity="0.35"/>
+<rect x="497.8" y="625.0" width="8" height="0.0" fill="#d97706" fill-opacity="0.35"/>
+<rect x="521.5" y="625.0" width="8" height="0.0" fill="#d97706" fill-opacity="0.35"/>
+<rect x="545.1" y="625.0" width="8" height="0.0" fill="#d97706" fill-opacity="0.35"/>
+<rect x="568.7" y="625.0" width="8" height="0.0" fill="#d97706" fill-opacity="0.35"/>
+<rect x="592.4" y="625.0" width="8" height="0.0" fill="#d97706" fill-opacity="0.35"/>
+<rect x="616.0" y="625.0" width="8" height="0.0" fill="#d97706" fill-opacity="0.35"/>
+<rect x="639.6" y="586.4" width="8" height="38.6" fill="#d97706" fill-opacity="0.35"/>
+<rect x="663.3" y="623.7" width="8" height="1.3" fill="#d97706" fill-opacity="0.35"/>
+<rect x="686.9" y="625.0" width="8" height="0.0" fill="#d97706" fill-opacity="0.35"/>
+<rect x="710.5" y="625.0" width="8" height="0.0" fill="#d97706" fill-opacity="0.35"/>
+<rect x="734.2" y="625.0" width="8" height="0.0" fill="#d97706" fill-opacity="0.35"/>
+<rect x="757.8" y="625.0" width="8" height="0.0" fill="#d97706" fill-opacity="0.35"/>
+<rect x="781.5" y="625.0" width="8" height="0.0" fill="#d97706" fill-opacity="0.35"/>
+<rect x="805.1" y="625.0" width="8" height="0.0" fill="#d97706" fill-opacity="0.35"/>
+<rect x="828.7" y="586.4" width="8" height="38.6" fill="#d97706" fill-opacity="0.35"/>
+<rect x="852.4" y="623.7" width="8" height="1.3" fill="#d97706" fill-opacity="0.35"/>
+<rect x="876.0" y="625.0" width="8" height="0.0" fill="#d97706" fill-opacity="0.35"/>
+<rect x="899.6" y="625.0" width="8" height="0.0" fill="#d97706" fill-opacity="0.35"/>
+<rect x="923.3" y="625.0" width="8" height="0.0" fill="#d97706" fill-opacity="0.35"/>
+<rect x="946.9" y="625.0" width="8" height="0.0" fill="#d97706" fill-opacity="0.35"/>
+<rect x="970.5" y="625.0" width="8" height="0.0" fill="#d97706" fill-opacity="0.35"/>
+<rect x="994.2" y="625.0" width="8" height="0.0" fill="#d97706" fill-opacity="0.35"/>
+<rect x="1017.8" y="625.0" width="8" height="0.0" fill="#d97706" fill-opacity="0.35"/>
+<rect x="1041.5" y="570.3" width="8" height="54.7" fill="#d97706" fill-opacity="0.35"/>
+<rect x="1065.1" y="617.6" width="8" height="7.4" fill="#d97706" fill-opacity="0.35"/>
+<rect x="1088.7" y="625.0" width="8" height="0.0" fill="#d97706" fill-opacity="0.35"/>
+<rect x="1112.4" y="625.0" width="8" height="0.0" fill="#d97706" fill-opacity="0.35"/>
+<rect x="1136.0" y="625.0" width="8" height="0.0" fill="#d97706" fill-opacity="0.35"/>
+<line x1="980" y1="98" x2="1010" y2="98" stroke="#0e7490" stroke-width="4"/><text x="1018" y="103" class="small">demanda media</text>
+<rect x="980" y="115" width="30" height="10" fill="#d97706" fill-opacity="0.35"/><text x="1018" y="125" class="small">intensidad de eventos</text>
+<text x="60" y="710" class="small">Las barras de eventos usan una banda visual separada; no comparten escala con la demanda.</text>
+</svg>

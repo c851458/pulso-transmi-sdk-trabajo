@@ -1,0 +1,4 @@
+resource,rows,columns,approx_serialized_memory_mib,period_start,period_end,frequency_minutes
+stations,12,5,<0.01,,, 
+observations,51840,3,4.05,2026-07-26T00:00:00-05:00,2026-09-08T23:45:00-05:00,15
+context,4320,6,0.94,2026-07-26T00:00:00-05:00,2026-09-08T23:45:00-05:00,15

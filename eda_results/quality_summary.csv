@@ -1,0 +1,15 @@
+resource,variable,rows,missing_or_special_count,missing_or_special_pct,unique_values,exact_duplicate_rows,duplicate_key_rows,constant_or_near_constant
+stations,station_id,12,0,0.000,12,0,0,no
+stations,station_name,12,0,0.000,12,0,0,no
+stations,corridor,12,0,0.000,7,0,0,no
+stations,latitude,12,0,0.000,12,0,0,no
+stations,longitude,12,0,0.000,12,0,0,no
+observations,observed_at,51840,0,0.000,4320,0,0,no
+observations,station_id,51840,0,0.000,12,0,0,identifier_repeated_by_design
+observations,demand,51840,0,0.000,1778,0,0,no
+context,observed_at,4320,0,0.000,4320,0,0,no
+context,event_intensity,4320,0,0.000,876,0,0,no
+context,rain_forecast,4320,0,0.000,2752,0,0,no
+context,rain_mm,4320,0,0.000,4316,0,0,no
+context,temperature_c,4320,0,0.000,4320,0,0,no
+context,temperature_forecast,4320,0,0.000,4320,0,0,no

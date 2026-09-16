@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="820" viewBox="0 0 1500 820">
+<style>text{font-family:DejaVu Sans,Arial,sans-serif;fill:#17212b}.title{font-size:30px;font-weight:700}.subtitle{font-size:16px;fill:#52606d}.axis{font-size:13px;fill:#52606d}.label{font-size:14px;font-weight:600}.small{font-size:12px;fill:#52606d}.note{font-size:13px;fill:#52606d}.grid{stroke:#d9e2ec;stroke-width:1}.axisline{stroke:#52606d;stroke-width:1.5}</style>
+<rect width="100%" height="100%" fill="#f8fafc"/>
+<text x="60" y="52" class="title">Ranking de demanda media</text>
+<text x="60" y="82" class="subtitle">Lectura directa: las tres estaciones superiores concentran los niveles medios más altos</text>
+<text x="229" y="160" text-anchor="end" class="small">09000 </text>
+<rect x="245" y="144" width="457.0" height="22" rx="7" fill="#0e7490" stroke="none" stroke-width="2"/>
+<text x="711.0" y="160" class="label">218</text>
+<text x="229" y="202" text-anchor="end" class="small">06111 </text>
+<rect x="245" y="186" width="477.4" height="22" rx="7" fill="#0e7490" stroke="none" stroke-width="2"/>
+<text x="731.4" y="202" class="label">239</text>
+<text x="229" y="244" text-anchor="end" class="small">09122 </text>
+<rect x="245" y="228" width="488.1" height="22" rx="7" fill="#0e7490" stroke="none" stroke-width="2"/>
+<text x="742.1" y="244" class="label">250</text>
+<text x="229" y="286" text-anchor="end" class="small">03000 </text>
+<rect x="245" y="270" width="496.4" height="22" rx="7" fill="#0e7490" stroke="none" stroke-width="2"/>
+<text x="750.4" y="286" class="label">258</text>
+<text x="229" y="328" text-anchor="end" class="small">07105 </text>
+<rect x="245" y="312" width="510.2" height="22" rx="7" fill="#0e7490" stroke="none" stroke-width="2"/>
+<text x="764.2" y="328" class="label">273</text>
+<text x="229" y="370" text-anchor="end" class="small">07107 </text>
+<rect x="245" y="354" width="518.4" height="22" rx="7" fill="#0e7490" stroke="none" stroke-width="2"/>
+<text x="772.4" y="370" class="label">281</text>
+<text x="229" y="412" text-anchor="end" class="small">02300 </text>
+<rect x="245" y="396" width="531.0" height="22" rx="7" fill="#0e7490" stroke="none" stroke-width="2"/>
+<text x="785.0" y="412" class="label">294</text>
+<text x="229" y="454" text-anchor="end" class="small">10009 </text>
+<rect x="245" y="438" width="573.8" height="22" rx="7" fill="#0e7490" stroke="none" stroke-width="2"/>
+<text x="827.8" y="454" class="label">338</text>
+<text x="229" y="496" text-anchor="end" class="small">05000 </text>
+<rect x="245" y="480" width="577.8" height="22" rx="7" fill="#0e7490" stroke="none" stroke-width="2"/>
+<text x="831.8" y="496" class="label">342</text>
+<text x="229" y="538" text-anchor="end" class="label">06000 ★</text>
+<rect x="245" y="522" width="742.1" height="22" rx="7" fill="#d97706" stroke="#92400e" stroke-width="2"/>
+<text x="996.1" y="538" class="label">511</text>
+<text x="229" y="580" text-anchor="end" class="label">05100 ★</text>
+<rect x="245" y="564" width="820.1" height="22" rx="7" fill="#d97706" stroke="#92400e" stroke-width="2"/>
+<text x="1074.1" y="580" class="label">591</text>
+<text x="229" y="622" text-anchor="end" class="label">07111 ★</text>
+<rect x="245" y="606" width="910.3" height="22" rx="7" fill="#d97706" stroke="#92400e" stroke-width="2"/>
+<text x="1164.3" y="622" class="label">684</text>
+<line x1="591.9" y1="128" x2="591.9" y2="607" stroke="#b91c1c" stroke-width="3" stroke-dasharray="8 6"/>
+<text x="591.9" y="117" text-anchor="middle" class="small">Promedio general: 357</text>
+<line x1="245" y1="625" x2="1030" y2="625" class="axisline"/>
+<text x="637.5" y="662" text-anchor="middle" class="axis">Demanda media</text>
+<rect x="1080" y="150" width="330" height="250" rx="12" fill="#fff7ed" stroke="#fed7aa"/>
+<text x="1110" y="192" class="title" style="font-size:22px">Top 3</text>
+<text x="1110" y="240" class="label">1. 07111 · 684</text>
+<text x="1110" y="292" class="label">2. 05100 · 591</text>
+<text x="1110" y="344" class="label">3. 06000 · 511</text>
+<text x="1110" y="340" class="note">★ estaciones prioritarias</text>
+<text x="60" y="755" class="note">Orden descendente de demanda media. La línea roja muestra el promedio entre las 12 estaciones.</text>
+</svg>

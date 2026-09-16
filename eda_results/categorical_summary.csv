@@ -1,0 +1,20 @@
+resource,variable,category,count,pct_of_rows
+stations,corridor,NQS,3,25.000
+stations,corridor,Américas,2,16.667
+stations,corridor,Caracas,2,16.667
+stations,corridor,Calle 26,2,16.667
+stations,corridor,Suba,1,8.333
+stations,corridor,Autonorte,1,8.333
+stations,corridor,Carrera 7-10,1,8.333
+stations,station_name,Portal Suba,1,8.333
+stations,station_name,Portal Américas,1,8.333
+stations,station_name,Portal Usme,1,8.333
+stations,station_name,Calle 100 - Marketmedios,1,8.333
+stations,station_name,Calle 72,1,8.333
+stations,station_name,Banderas,1,8.333
+stations,station_name,Ricaurte - NQS,1,8.333
+stations,station_name,Portal El Dorado – C.C. NUESTRO BOGOTÁ,1,8.333
+stations,station_name,Universidad Nacional,1,8.333
+stations,station_name,Universidades – CityU,1,8.333
+stations,station_name,Movistar Arena,1,8.333
+stations,station_name,Museo Nacional,1,8.333

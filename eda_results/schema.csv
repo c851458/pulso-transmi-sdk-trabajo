@@ -1,0 +1,15 @@
+resource,variable,observed_type,role,unique_values
+stations,station_id,string,identifier,12
+stations,station_name,string,categorical,12
+stations,corridor,string,categorical,7
+stations,latitude,float,numeric,12
+stations,longitude,float,numeric,12
+observations,observed_at,string,datetime,4320
+observations,station_id,string,identifier,12
+observations,demand,int,target,1778
+context,observed_at,string,datetime,4320
+context,event_intensity,float,numeric,876
+context,rain_forecast,float,numeric,2752
+context,rain_mm,float,numeric,4316
+context,temperature_c,float,numeric,4320
+context,temperature_forecast,float,numeric,4320
