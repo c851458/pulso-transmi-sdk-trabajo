@@ -18,6 +18,25 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - name: Validate required secrets
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          PULSO_API_URL: ${{ secrets.PULSO_API_URL }}
+          PULSO_API_KEY: ${{ secrets.PULSO_API_KEY }}
+        run: |
+          missing=0
+          for name in SUPABASE_URL SUPABASE_SERVICE_ROLE_KEY PULSO_API_URL PULSO_API_KEY; do
+            if [ -z "${!name}" ]; then
+              echo "Missing required GitHub Secret: $name"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "Configure the missing secrets in repository Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+          echo "Required secrets are configured."
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
