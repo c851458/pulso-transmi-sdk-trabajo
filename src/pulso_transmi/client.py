@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import uuid
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -53,6 +54,31 @@ class PulsoTransmiClient:
             return response
         except httpx.HTTPError as exc:
             raise PulsoTransmiError(f"GET {path} failed: {exc}") from exc
+
+    def submit(self, payload: dict[str, Any], *, idempotency_key: str | None = None) -> dict[str, Any]:
+        key = idempotency_key or str(uuid.uuid4())
+        try:
+            response = self._client.post(
+                "/v1/submissions",
+                json=payload,
+                headers={"Idempotency-Key": key},
+            )
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPError as exc:
+            raise PulsoTransmiError(f"POST /v1/submissions failed: {exc}") from exc
+
+    def current_cycle(self) -> dict[str, Any] | None:
+        try:
+            response = self._client.get("/v1/forecast-cycles/current")
+            if response.status_code == 404:
+                detail = response.json().get("detail", {})
+                if detail.get("code") == "no_open_cycle":
+                    return None
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPError as exc:
+            raise PulsoTransmiError(f"GET /v1/forecast-cycles/current failed: {exc}") from exc
 
     def meta(self) -> dict[str, Any]:
         return self._get("/v1/meta").json()

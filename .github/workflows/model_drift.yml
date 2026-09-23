@@ -1,0 +1,70 @@
+name: pulso-transmi-model-drift
+
+on:
+  schedule:
+    - cron: "17 */2 * * *"
+  workflow_dispatch:
+    inputs:
+      force_retrain:
+        description: "Reentrenar aunque no se supere el umbral de drift"
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: pulso-transmi-model-drift
+  cancel-in-progress: false
+
+jobs:
+  drift-and-retrain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install -e '.[ml]'
+      - name: Ingest latest observations
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          PULSO_API_URL: ${{ secrets.PULSO_API_URL }}
+          PULSO_API_KEY: ${{ secrets.PULSO_API_KEY }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: python -u -m src.ingest
+      - name: Evaluate model drift
+        id: drift
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          DRIFT_PSI_THRESHOLD: ${{ vars.DRIFT_PSI_THRESHOLD || '0.20' }}
+          DRIFTED_FEATURES_REQUIRED: ${{ vars.DRIFTED_FEATURES_REQUIRED || '2' }}
+          DRIFT_PERFORMANCE_RATIO: ${{ vars.DRIFT_PERFORMANCE_RATIO || '1.25' }}
+          DRIFT_MIN_ROWS: ${{ vars.DRIFT_MIN_ROWS || '96' }}
+          RETRAIN_COOLDOWN_HOURS: ${{ vars.RETRAIN_COOLDOWN_HOURS || '24' }}
+        run: python -u -m src.drift
+      - name: Retrain and publish after drift
+        if: steps.drift.outputs.retrain == 'true' || inputs.force_retrain == true
+        env:
+          PULSO_API_URL: ${{ secrets.PULSO_API_URL }}
+          PULSO_API_KEY: ${{ secrets.PULSO_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: python -u -m src.pipeline
+      - name: Publish current model predictions
+        if: steps.drift.outputs.retrain != 'true' && inputs.force_retrain != true
+        env:
+          PULSO_API_URL: ${{ secrets.PULSO_API_URL }}
+          PULSO_API_KEY: ${{ secrets.PULSO_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: python -u -m src.pipeline --publish-only

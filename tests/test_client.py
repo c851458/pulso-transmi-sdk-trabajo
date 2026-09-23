@@ -7,6 +7,10 @@ from pulso_transmi import PulsoTransmiClient
 
 
 def handler(request: httpx.Request) -> httpx.Response:
+    if request.url.path == "/v1/submissions":
+        assert request.method == "POST"
+        assert request.headers["Idempotency-Key"] == "run-123456"
+        return httpx.Response(201, json={"id": "sub_test"})
     if request.url.path == "/v1/meta":
         content = b"station_id,name\n03000,Portal Suba\n"
         return httpx.Response(200, json={
@@ -55,3 +59,9 @@ def test_download_verifies_checksum(tmp_path) -> None:
     with client() as api:
         path = api.download("stations.csv", tmp_path / "stations.csv")
     assert path.read_text() == "station_id,name\n03000,Portal Suba\n"
+
+
+def test_submit_sends_idempotency_key() -> None:
+    with client() as api:
+        response = api.submit({"predictions": []}, idempotency_key="run-123456")
+    assert response["id"] == "sub_test"

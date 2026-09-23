@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -10,11 +11,13 @@ import numpy as np
 import pandas as pd
 from joblib import dump
 from sklearn.compose import ColumnTransformer
-from sklearn.linear_model import LinearRegression
+from sklearn.ensemble import HistGradientBoostingRegressor, RandomForestRegressor
+from sklearn.impute import SimpleImputer
+from sklearn.linear_model import LinearRegression, Ridge
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.model_selection import TimeSeriesSplit, cross_validate
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder
+from sklearn.preprocessing import OneHotEncoder, RobustScaler
 
 
 TABLE_PAGE_SIZE = 1000
@@ -25,12 +28,14 @@ ARTIFACT_DIR = Path("artifacts/baseline")
 
 def load_env(path: Path = Path(".env")) -> dict[str, str]:
     values: dict[str, str] = {}
-    for raw_line in path.read_text().splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        values[key.strip()] = value.strip().strip('"').strip("'")
+    if path.exists():
+        for raw_line in path.read_text().splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            values[key.strip()] = value.strip().strip('"').strip("'")
+    values.update({key: value for key, value in os.environ.items() if key.startswith("SUPABASE_")})
     return values
 
 
@@ -93,10 +98,10 @@ def fetch_dataset(client: SupabaseRestClient) -> pd.DataFrame:
     )
     if len(dataset) != len(observations):
         raise ValueError("The joins changed the observation row count")
-    if dataset.isna().any().any():
-        raise ValueError("Null values found after joining the modeling tables")
-    if dataset.duplicated(["station_id", "observed_at"]).any():
-        raise ValueError("Duplicate station/timestamp keys found")
+    dataset = dataset.replace([np.inf, -np.inf], np.nan)
+    dataset = dataset.drop_duplicates(["station_id", "observed_at"], keep="last")
+    if dataset["demand"].isna().any() or (dataset["demand"] < 0).any():
+        raise ValueError("Target demand contains invalid values")
     return dataset
 
 
@@ -110,7 +115,7 @@ def add_features(dataset: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
-def build_pipeline() -> Pipeline:
+def feature_columns() -> tuple[list[str], list[str]]:
     categorical = ["station_id", "corridor"]
     numeric = [
         "latitude",
@@ -125,16 +130,97 @@ def build_pipeline() -> Pipeline:
         "weekday_sin",
         "weekday_cos",
     ]
+    return categorical, numeric
+
+
+def build_preprocessor(*, dense: bool = False) -> ColumnTransformer:
+    categorical, numeric = feature_columns()
     preprocessor = ColumnTransformer(
         [
-            ("categorical", OneHotEncoder(handle_unknown="ignore"), categorical),
-            ("numeric", "passthrough", numeric),
+            ("categorical", Pipeline([
+                ("imputer", SimpleImputer(strategy="most_frequent")),
+                ("encoder", OneHotEncoder(handle_unknown="ignore", sparse_output=not dense)),
+            ]), categorical),
+            ("numeric", Pipeline([
+                ("imputer", SimpleImputer(strategy="median")),
+                ("scaler", RobustScaler()),
+            ]), numeric),
         ],
         remainder="drop",
     )
-    return Pipeline(
-        [("preprocess", preprocessor), ("model", LinearRegression())]
+    return preprocessor
+
+
+def build_models() -> dict[str, Pipeline]:
+    return {
+        "baseline_linear": Pipeline([
+            ("preprocess", build_preprocessor()),
+            ("model", LinearRegression()),
+        ]),
+        "robust_ridge": Pipeline([
+            ("preprocess", build_preprocessor()),
+            ("model", Ridge(alpha=10.0)),
+        ]),
+        "random_forest": Pipeline([
+            ("preprocess", build_preprocessor()),
+            ("model", RandomForestRegressor(
+                n_estimators=80,
+                max_depth=12,
+                min_samples_leaf=10,
+                max_features=0.5,
+                n_jobs=-1,
+                random_state=RANDOM_STATE,
+            )),
+        ]),
+        "hist_gradient_boosting": Pipeline([
+            ("preprocess", build_preprocessor(dense=True)),
+            ("model", HistGradientBoostingRegressor(
+                learning_rate=0.05,
+                max_iter=250,
+                max_leaf_nodes=31,
+                min_samples_leaf=30,
+                l2_regularization=1.0,
+                early_stopping=True,
+                validation_fraction=0.15,
+                n_iter_no_change=20,
+                random_state=RANDOM_STATE,
+            )),
+        ]),
+    }
+
+
+def evaluate_model(name: str, model: Pipeline, train: pd.DataFrame, test: pd.DataFrame, predictors: list[str], target: str) -> tuple[dict[str, object], Pipeline, np.ndarray]:
+    started = time.perf_counter()
+    cv = TimeSeriesSplit(n_splits=5)
+    cv_scores = cross_validate(
+        model,
+        train[predictors],
+        train[target],
+        cv=cv,
+        scoring={"mae": "neg_mean_absolute_error", "rmse": "neg_root_mean_squared_error", "r2": "r2"},
+        n_jobs=None,
     )
+    model.fit(train[predictors], train[target])
+    predictions = np.maximum(0.0, model.predict(test[predictors]))
+    actual = test[target].to_numpy()
+    absolute_error = np.abs(actual - predictions)
+    elapsed = time.perf_counter() - started
+    result = {
+        "model": name,
+        "cv_mae_mean": float(-cv_scores["test_mae"].mean()),
+        "cv_mae_std": float(cv_scores["test_mae"].std()),
+        "cv_rmse_mean": float(-cv_scores["test_rmse"].mean()),
+        "cv_rmse_std": float(cv_scores["test_rmse"].std()),
+        "cv_r2_mean": float(cv_scores["test_r2"].mean()),
+        "cv_r2_std": float(cv_scores["test_r2"].std()),
+        "mae": float(mean_absolute_error(actual, predictions)),
+        "rmse": float(np.sqrt(mean_squared_error(actual, predictions))),
+        "r2": float(r2_score(actual, predictions)),
+        "wape": float(absolute_error.sum() / max(actual.sum(), 1.0)),
+        "training_seconds": float(elapsed),
+        "stability_score": float(cv_scores["test_mae"].std() / max(-cv_scores["test_mae"].mean(), 1.0)),
+    }
+    return result, model, predictions
 
 
 def main() -> None:
@@ -164,22 +250,19 @@ def main() -> None:
         "weekday_sin",
         "weekday_cos",
     ]
-    model = build_pipeline()
-    cv = TimeSeriesSplit(n_splits=5)
-    cv_scores = cross_validate(
-        model,
-        train[predictors],
-        train[target],
-        cv=cv,
-        scoring={"mae": "neg_mean_absolute_error", "rmse": "neg_root_mean_squared_error", "r2": "r2"},
-        n_jobs=None,
-    )
-    model.fit(train[predictors], train[target])
-    predictions = model.predict(test[predictors])
-    absolute_error = np.abs(test[target].to_numpy() - predictions)
-    wape = float(absolute_error.sum() / test[target].sum())
-    feature_names = model.named_steps["preprocess"].get_feature_names_out()
-    coefficients = model.named_steps["model"].coef_
+    model_results = []
+    fitted_models = {}
+    test_predictions = {}
+    for name, candidate in build_models().items():
+        result, fitted, candidate_predictions = evaluate_model(name, candidate, train, test, predictors, target)
+        model_results.append(result)
+        fitted_models[name] = fitted
+        test_predictions[name] = candidate_predictions
+    comparison = pd.DataFrame(model_results).sort_values(["cv_mae_mean", "stability_score"])
+    selected_name = str(comparison.iloc[0]["model"])
+    model = fitted_models[selected_name]
+    predictions = test_predictions[selected_name]
+    selected_result = next(result for result in model_results if result["model"] == selected_name)
     metrics = {
         "dataset": {
             "table": "demand_observation + context_observation + station",
@@ -197,22 +280,12 @@ def main() -> None:
             "random_state": None,
             "reason": "time-series leakage prevention",
         },
-        "cross_validation": {
-            "method": "TimeSeriesSplit(n_splits=5)",
-            "mae_mean": float(-cv_scores["test_mae"].mean()),
-            "mae_std": float(cv_scores["test_mae"].std()),
-            "rmse_mean": float(-cv_scores["test_rmse"].mean()),
-            "rmse_std": float(cv_scores["test_rmse"].std()),
-            "r2_mean": float(cv_scores["test_r2"].mean()),
-            "r2_std": float(cv_scores["test_r2"].std()),
-        },
+        "selection": {"criterion": "lowest temporal CV MAE, then stability", "selected_model": selected_name},
+        "model_comparison": model_results,
         "test": {
-            "mae": float(mean_absolute_error(test[target], predictions)),
+            **selected_result,
             "mse": float(mean_squared_error(test[target], predictions)),
-            "rmse": float(np.sqrt(mean_squared_error(test[target], predictions))),
-            "r2": float(r2_score(test[target], predictions)),
-            "wape": wape,
-            "accuracy": 100 * max(0.0, 1.0 - wape),
+            "accuracy": 100 * max(0.0, 1.0 - selected_result["wape"]),
         },
     }
     exploration = {
@@ -247,11 +320,7 @@ def main() -> None:
         },
         ARTIFACT_DIR / "model_and_metrics.joblib",
     )
-    pd.DataFrame(
-        {"feature": feature_names, "coefficient": coefficients}
-    ).sort_values("coefficient", key=lambda values: values.abs(), ascending=False).to_csv(
-        ARTIFACT_DIR / "coefficients.csv", index=False
-    )
+    comparison.to_csv(ARTIFACT_DIR / "model_comparison.csv", index=False)
     pd.DataFrame(
         {
             "observed_at": test["observed_at"].astype(str),
