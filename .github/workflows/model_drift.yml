@@ -1,8 +1,6 @@
 name: pulso-transmi-model-drift
 
 on:
-  schedule:
-    - cron: "17 */2 * * *"
   workflow_dispatch:
     inputs:
       force_retrain:
@@ -49,7 +47,7 @@ jobs:
           python-version: "3.12"
           cache: pip
       - name: Install dependencies
-        run: python -m pip install -e '.[ml]'
+        run: python -m pip install '.[ml]'
       - name: Ingest latest observations
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -87,3 +85,14 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           GITHUB_SHA: ${{ github.sha }}
         run: python -u -m src.pipeline --publish-only
+      - name: Upload failed pipeline diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: model-drift-diagnostics-${{ github.run_id }}
+          path: |
+            artifacts/outbox/
+            artifacts/pipeline-status.json
+            artifacts/baseline/metrics.json
+            artifacts/baseline/predictions.csv
+          if-no-files-found: ignore

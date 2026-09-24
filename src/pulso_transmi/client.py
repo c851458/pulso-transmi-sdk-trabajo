@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import random
 import time
@@ -14,6 +15,7 @@ import pandas as pd
 
 
 DEFAULT_BASE_URL = "https://pulso-transmi.72-60-245-2.sslip.io"
+LOG = logging.getLogger("pulso.api")
 
 
 class PulsoTransmiError(RuntimeError):
@@ -90,6 +92,14 @@ class PulsoTransmiClient:
             except httpx.HTTPError as exc:
                 raise PulsoTransmiError(f"{method} {path} failed: {type(exc).__name__}") from exc
 
+            LOG.info(
+                "API response: method=%s path=%s attempt=%d/%d status=%d",
+                method,
+                path,
+                attempt + 1,
+                self._max_retries + 1,
+                response.status_code,
+            )
             retryable = response.status_code == 408 or response.status_code == 429 or response.status_code >= 500
             if response.is_success or response.status_code in allowed_statuses:
                 return response
@@ -132,10 +142,8 @@ class PulsoTransmiClient:
         if not isinstance(result, dict) or not result:
             raise PulsoTransmiError("POST /v1/submissions returned an empty confirmation", status_code=response.status_code)
         has_identifier = any(result.get(key) for key in ("id", "submission_id", "operation_id"))
-        status = str(result.get("status", "")).lower()
-        has_accepted_status = status in {"accepted", "created", "received", "success", "submitted", "ok"}
         has_boolean_confirmation = result.get("received") is True or result.get("accepted") is True
-        if not (has_identifier or has_accepted_status or has_boolean_confirmation):
+        if not (has_identifier or has_boolean_confirmation):
             raise PulsoTransmiError("POST /v1/submissions response lacks a confirmation field", status_code=response.status_code)
         return result
 

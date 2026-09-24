@@ -3,7 +3,7 @@ name: pulso-transmi-pipeline
 on:
   workflow_dispatch:
   schedule:
-    # Ejecuta el pipeline cada 5 minutos para acompañar los ciclos de pronóstico.
+    # GitHub Actions interpreta este horario en UTC.
     - cron: "*/5 * * * *"
 
 concurrency:

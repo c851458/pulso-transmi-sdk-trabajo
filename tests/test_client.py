@@ -107,3 +107,16 @@ def test_submit_does_not_retry_authentication_error() -> None:
 
     assert error.value.status_code == 401
     assert calls == 1
+
+
+def test_submit_requires_confirmation_fields() -> None:
+    def unconfirmed(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(201, json={"status": "accepted"})
+
+    with PulsoTransmiClient(
+        base_url="https://example.test",
+        transport=httpx.MockTransport(unconfirmed),
+        backoff_seconds=(0, 0, 0),
+    ) as api:
+        with pytest.raises(PulsoTransmiError, match="confirmation field"):
+            api.submit({"predictions": []}, idempotency_key="confirmation-key")

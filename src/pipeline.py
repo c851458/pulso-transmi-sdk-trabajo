@@ -7,6 +7,7 @@ import os
 import subprocess
 import argparse
 import gzip
+import logging
 import math
 import sys
 from datetime import datetime, timedelta, timezone
@@ -25,6 +26,7 @@ ARTIFACT_DIR = Path("artifacts/baseline")
 OUTBOX_DIR = Path("artifacts/outbox")
 TRAIN_SCRIPT = Path("examples/03_supabase_linear_baseline.py")
 REQUIRED_METRICS = ("mae", "rmse", "wape", "accuracy")
+LOG = logging.getLogger("pulso.pipeline")
 
 
 class WaitingForOpenCycle(RuntimeError):
@@ -54,12 +56,20 @@ class SupabaseRestClient:
             "Prefer": "return=representation",
         }
 
-    def request(self, method: str, table: str, payload: Any = None, *, params: dict[str, str] | None = None) -> list[dict[str, Any]]:
+    def request(
+        self,
+        method: str,
+        table: str,
+        payload: Any = None,
+        *,
+        params: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> list[dict[str, Any]]:
         query = f"?{urlencode(params)}" if params else ""
         request = Request(
             f"{self.base_url}/{table}{query}",
             data=None if payload is None else json.dumps(payload, default=str).encode(),
-            headers=self.headers,
+            headers={**self.headers, **(headers or {})},
             method=method,
         )
         try:
@@ -78,14 +88,14 @@ class SupabaseRestClient:
         return int(rows[0]["id"])
 
     def find_model(self, version: str) -> dict[str, Any] | None:
-        rows = self.request("GET", "model", params={"select": "id,version", "version": f"eq.{version}", "limit": "1"})
+        rows = self.request("GET", "model", params={"select": "id,version,trained_at", "version": f"eq.{version}", "limit": "1"})
         return rows[0] if rows else None
 
     def active_model(self) -> dict[str, Any] | None:
         rows = self.request(
             "GET",
             "model",
-            params={"select": "id,version,artifact_base64,artifact_sha256", "status": "eq.active", "order": "trained_at.desc", "limit": "1"},
+            params={"select": "id,version,algorithm,artifact_base64,artifact_sha256", "status": "eq.active", "order": "trained_at.desc", "limit": "1"},
         )
         return rows[0] if rows else None
 
@@ -107,6 +117,20 @@ class SupabaseRestClient:
         if not payload:
             return []
         return self.request("POST", table, payload)
+
+    def upsert_many(self, table: str, payload: list[dict[str, Any]], conflict_columns: str) -> list[dict[str, Any]]:
+        if not payload:
+            return []
+        return self.request(
+            "POST",
+            table,
+            payload,
+            params={"on_conflict": conflict_columns},
+            headers={"Prefer": "return=representation,resolution=merge-duplicates"},
+        )
+
+    def update(self, table: str, filters: dict[str, str], payload: dict[str, Any]) -> list[dict[str, Any]]:
+        return self.request("PATCH", table, payload, params=filters)
 
 
 def run_training() -> None:
@@ -133,6 +157,11 @@ def validate_metrics(metrics: Any, *, expected_prediction_count: int | None = No
         raise RuntimeError(f"Missing required metrics: {', '.join(missing)}")
     for name in REQUIRED_METRICS:
         _validate_finite(test[name], f"metrics.test.{name}")
+    for name, value in test.items():
+        if value is None:
+            raise RuntimeError(f"Metric is null: metrics.test.{name}")
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            _validate_finite(value, f"metrics.test.{name}")
     if expected_prediction_count is not None:
         reported = metrics.get("split", {}).get("test_rows")
         if reported is not None and int(reported) != expected_prediction_count:
@@ -176,6 +205,90 @@ def validate_submission_payload(payload: Any, *, expected_prediction_count: int)
             raise RuntimeError(f"Prediction {index} is incomplete")
         _validate_finite(prediction["value"], f"payload.predictions[{index}].value")
     _validate_json_value(payload)
+
+
+def validate_submission_response(
+    response: Any,
+    *,
+    cycle_id: str,
+    expected_prediction_count: int,
+) -> dict[str, Any]:
+    if not isinstance(response, dict) or not response:
+        raise RuntimeError("API returned an empty submission confirmation")
+    status = str(response.get("status", "")).lower()
+    submission_id = response.get("submission_id") or response.get("id") or response.get("operation_id")
+    accepted_statuses = {"accepted", "created", "received", "success", "submitted", "ok"}
+    if not submission_id and status not in accepted_statuses:
+        raise RuntimeError(f"API did not accept submission: status={status or 'missing'}")
+    if not submission_id:
+        raise RuntimeError("API confirmation is missing submission_id")
+    received = response.get("predictions_received")
+    if received is not None and int(received) != expected_prediction_count:
+        raise RuntimeError(
+            f"API prediction confirmation mismatch: expected {expected_prediction_count}, got {received}"
+        )
+    contract = response.get("validated_contract")
+    if isinstance(contract, dict):
+        if contract.get("cycle_id") != cycle_id:
+            raise RuntimeError("API validated contract belongs to a different cycle")
+        contract_count = contract.get("expected_predictions")
+        if contract_count is not None and int(contract_count) != expected_prediction_count:
+            raise RuntimeError("API validated contract has an unexpected prediction count")
+    if response.get("is_official") is False:
+        raise RuntimeError("API submission was not marked official")
+    return response
+
+
+def persist_forecast_predictions(
+    db: SupabaseRestClient,
+    *,
+    model_id: int,
+    cycle: dict[str, Any],
+    predictions: list[dict[str, Any]],
+    generated_at: str,
+) -> int:
+    forecast_start = pd.Timestamp(cycle.get("forecast_start_at") or cycle["data_cutoff"])
+    rows = []
+    for prediction in predictions:
+        target_at = pd.Timestamp(prediction["target_at"])
+        horizon_periods = int(round((target_at - forecast_start).total_seconds() / 900)) + 1
+        rows.append({
+            "model_id": model_id,
+            "station_id": str(prediction["station_id"]).zfill(5),
+            "target_at": target_at.isoformat(),
+            "generated_at": generated_at,
+            "horizon_periods": horizon_periods,
+            "prediction": float(prediction["value"]),
+        })
+    count = 0
+    for start in range(0, len(rows), 500):
+        count += len(db.upsert_many("prediction", rows[start : start + 500], "model_id,station_id,target_at,horizon_periods"))
+    return count
+
+
+def persist_execution(
+    db: SupabaseRestClient,
+    *,
+    run_id: str,
+    model_id: int,
+    cycle_id: str,
+    model_version: str,
+    generated_at: str,
+    metrics: dict[str, Any],
+    prediction_count: int,
+    payload_sha256: str,
+) -> None:
+    db.upsert_many("pipeline_execution", [{
+        "run_id": run_id,
+        "model_id": model_id,
+        "cycle_id": cycle_id,
+        "model_version": model_version,
+        "generated_at": generated_at,
+        "metrics": metrics,
+        "prediction_count": prediction_count,
+        "payload_sha256": payload_sha256,
+        "status": "prepared",
+    }], "run_id")
 
 
 def _safe_payload_path(submission_key: str) -> Path:
@@ -240,7 +353,12 @@ def restore_active_artifacts(db: SupabaseRestClient) -> None:
         raise RuntimeError("Active model artifact checksum mismatch")
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
     (ARTIFACT_DIR / "model_and_metrics.joblib").write_bytes(artifact)
-    metrics = {"test": db.latest_training_metrics(int(active_model["id"]))}
+    algorithm = str(active_model.get("algorithm", "model")).removeprefix("sklearn.")
+    stored_metrics = db.latest_training_metrics(int(active_model["id"]))
+    metrics = stored_metrics if "test" in stored_metrics else {
+        "selection": {"selected_model": algorithm},
+        "test": stored_metrics,
+    }
     (ARTIFACT_DIR / "metrics.json").write_text(json.dumps(metrics, indent=2))
 
 
@@ -270,7 +388,8 @@ def publish(env: dict[str, str], *, persist_evaluation: bool = True) -> dict[str
         raise RuntimeError(f"Model artifact does not exist: {artifact_path}")
     artifact = artifact_path.read_bytes()
     artifact_sha256 = hashlib.sha256(artifact).hexdigest()
-    version = f"linear-{artifact_sha256[:12]}"
+    algorithm_name = str(metrics.get("selection", {}).get("selected_model", "model"))
+    version = f"{algorithm_name}-{artifact_sha256[:12]}"
     now = utc_now()
     db = SupabaseRestClient(supabase_url, supabase_key)
     data_cut_id = db.latest_data_cut_id()
@@ -278,9 +397,10 @@ def publish(env: dict[str, str], *, persist_evaluation: bool = True) -> dict[str
     if existing_model:
         model_id = int(existing_model["id"])
         run_row = {"id": "reused"}
+        trained_at = str(existing_model["trained_at"])
         print(f"[inference] Reusing model version={version} id={model_id}")
     else:
-        algorithm = metrics.get("selection", {}).get("selected_model", "unknown")
+        algorithm = algorithm_name
         compressed_artifact = gzip.compress(artifact, compresslevel=9)
         print(f"[inference] Artifact compressed: {len(artifact)} -> {len(compressed_artifact)} bytes")
         model_row = db.insert("model", {
@@ -293,12 +413,13 @@ def publish(env: dict[str, str], *, persist_evaluation: bool = True) -> dict[str
             "artifact_sha256": artifact_sha256,
         })
         model_id = int(model_row["id"])
+        trained_at = now.isoformat()
         run_row = db.insert("training_run", {
             "model_id": model_id,
             "data_cut_id": data_cut_id,
             "cutoff_at": now.isoformat(),
             "parameters": {"script": str(TRAIN_SCRIPT), "artifact_sha256": artifact_sha256},
-            "metrics": metrics["test"],
+            "metrics": metrics,
             "started_at": now.isoformat(),
             "finished_at": now.isoformat(),
         })
@@ -363,22 +484,78 @@ def publish(env: dict[str, str], *, persist_evaluation: bool = True) -> dict[str
             "cycle_id": cycle_id,
             "client_run_id": client_run_id,
             "data_cutoff": cycle["data_cutoff"],
-            "model": {"version": version, "trained_at": now.isoformat(), "training_data_end": cycle["data_cutoff"], "git_commit": os.getenv("GITHUB_SHA")},
+            "model": {"version": version, "trained_at": trained_at, "training_data_end": cycle["data_cutoff"], "git_commit": os.getenv("GITHUB_SHA")},
             "predictions": submission_predictions,
         }
         validate_submission_payload(payload, expected_prediction_count=expected_submission_count)
+        payload_sha256 = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        metric_names = ", ".join(sorted(metric_values))
+        print(f"[INFO] Predicciones generadas/preparadas: {len(submission_predictions)}/{expected_submission_count}")
+        print(f"[INFO] Métricas calculadas: {len(metric_values)} ({metric_names})")
+        print("[INFO] Validación del payload: OK")
+        persist_execution(
+            db,
+            run_id=client_run_id,
+            model_id=model_id,
+            cycle_id=cycle_id,
+            model_version=version,
+            generated_at=now.isoformat(),
+            metrics=metrics,
+            prediction_count=len(submission_predictions),
+            payload_sha256=payload_sha256,
+        )
         OUTBOX_DIR.mkdir(parents=True, exist_ok=True)
         outbox_path = _safe_payload_path(submission_key)
-        outbox_path.write_text(json.dumps({"idempotency_key": submission_key, "payload": payload}, indent=2, allow_nan=False))
+        outbox_path.write_text(json.dumps({"idempotency_key": submission_key, "run_id": client_run_id, "model_version": version, "metrics": metrics, "payload": payload}, indent=2, allow_nan=False))
         print("[INFO] Generando submission")
         print("[INFO] Publicando resultados")
-        submission = api.submit(payload, idempotency_key=submission_key)
+        try:
+            submission = validate_submission_response(
+                api.submit(payload, idempotency_key=submission_key),
+                cycle_id=cycle_id,
+                expected_prediction_count=expected_submission_count,
+            )
+        except Exception as exc:
+            db.update("pipeline_execution", {"run_id": f"eq.{client_run_id}"}, {
+                "status": "failed",
+                "error": f"{type(exc).__name__}: {exc}",
+            })
+            raise
+        print(
+            f"[INFO] API confirmed receipt: submission_id={submission.get('submission_id') or submission.get('id')} "
+            f"cycle={cycle_id} model={version} predictions={len(submission_predictions)}"
+        )
+        try:
+            persisted = persist_forecast_predictions(
+                db,
+                model_id=model_id,
+                cycle=cycle,
+                predictions=submission_predictions,
+                generated_at=now.isoformat(),
+            )
+            if persisted != expected_submission_count:
+                raise RuntimeError(f"Supabase prediction confirmation mismatch: expected {expected_submission_count}, got {persisted}")
+            db.update("pipeline_execution", {"run_id": f"eq.{client_run_id}"}, {
+                "status": "confirmed",
+                "api_submission_id": submission.get("submission_id") or submission.get("id"),
+                "api_response": submission,
+                "confirmed_at": utc_now().isoformat(),
+            })
+        except Exception as exc:
+            db.update("pipeline_execution", {"run_id": f"eq.{client_run_id}"}, {
+                "status": "partial_failure",
+                "api_submission_id": submission.get("submission_id") or submission.get("id"),
+                "api_response": submission,
+                "error": f"{type(exc).__name__}: {exc}",
+            })
+            raise
         outbox_path.unlink(missing_ok=True)
-        print(f"[INFO] API confirmed receipt: cycle={cycle_id} model={version} predictions={len(submission_predictions)}")
+        print(f"[INFO] Supabase confirmed forecast predictions: {persisted}/{expected_submission_count}")
     return {"model_id": model_id, "training_run_id": run_row["id"], "submission": submission}
 
 
 def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
     parser = argparse.ArgumentParser()
     parser.add_argument("--publish-only", action="store_true")
     args = parser.parse_args()
