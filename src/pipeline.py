@@ -505,7 +505,9 @@ def publish(env: dict[str, str], *, persist_evaluation: bool = True) -> dict[str
         expected_submission_count = target_count * station_count
         if len(submission_predictions) != expected_submission_count:
             raise RuntimeError(f"Inference count mismatch: expected {expected_submission_count}, got {len(submission_predictions)}")
-        submission_key = f"{cycle_id}__{version}"
+        # A cycle is the logical submission boundary. The model artifact can change
+        # between retries, but that must never create a second submission for it.
+        submission_key = cycle_id
         client_run_id = hashlib.sha256(submission_key.encode()).hexdigest()[:32]
         payload = {
             "schema_version": "1.0",
