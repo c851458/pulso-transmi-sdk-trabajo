@@ -26,8 +26,12 @@ eso podia crear carreras entre ejecuciones.
 - El pipeline solo escribe `SUCCESS` despues de confirmar API; de lo contrario
   escribe `FAILED` y devuelve codigo distinto de cero.
 - `concurrency` evita ejecuciones simultaneas.
-- Solo `model_drift.yml` tiene schedule de inferencia/publicacion. `pipeline.yml`
-  conserva `workflow_dispatch` para pruebas manuales.
+- Solo `pipeline.yml` tiene un schedule de publicación (`*/5 * * * *`).
+  `data_pipeline.yml` y `model_drift.yml` conservan `workflow_dispatch` para
+  pruebas o ejecuciones excepcionales y no publican en paralelo.
+- `pipeline_sync_status` expone al portal el estado de sincronización y
+  `last_updated_at`; el frontend puede marcar datos como stale según su propia
+  ventana de frescura sin ejecutar la ingesta.
 
 ## Estado final esperado
 

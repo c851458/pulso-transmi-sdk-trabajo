@@ -306,6 +306,18 @@ def write_pipeline_status(status: str, detail: str) -> None:
             summary.write(f"## Pipeline: {status}\n\n{detail}\n")
 
 
+def update_sync_status_state(db: SupabaseRestClient, status: str, *, error: str | None = None) -> None:
+    previous = db.rows("pipeline_sync_status", select="last_updated_at", id="eq.singleton", limit="1")
+    now = utc_now().isoformat()
+    db.upsert_many("pipeline_sync_status", [{
+        "id": "singleton",
+        "status": status,
+        "last_updated_at": now if status == "SUCCESS" else (previous[0].get("last_updated_at") if previous else None),
+        "error": error,
+        "updated_at": now,
+    }], "id")
+
+
 def forecast_open_cycle(api: PulsoTransmiClient, cycle: dict[str, Any], artifact: bytes) -> list[dict[str, Any]]:
     bundle = __import__("joblib").load(ARTIFACT_DIR / "model_and_metrics.joblib")
     stations = api.stations()
@@ -463,6 +475,7 @@ def publish(env: dict[str, str], *, persist_evaluation: bool = True) -> dict[str
             print(f"[WARNING] Publicación aplazada")
             print(f"[WARNING] Estado: WAITING_FOR_OPEN_CYCLE")
             write_pipeline_status("WAITING_FOR_OPEN_CYCLE", detail)
+            update_sync_status_state(db, "WAITING_FOR_OPEN_CYCLE", error=detail)
             raise WaitingForOpenCycle(detail)
         cycle_id = str(cycle.get("cycle_id") or cycle["id"])
         print(f"[INFO] Ciclo: {cycle_id}")
@@ -520,6 +533,7 @@ def publish(env: dict[str, str], *, persist_evaluation: bool = True) -> dict[str
                 "status": "failed",
                 "error": f"{type(exc).__name__}: {exc}",
             })
+            update_sync_status_state(db, "FAILED", error=f"{type(exc).__name__}: {exc}")
             raise
         print(
             f"[INFO] API confirmed receipt: submission_id={submission.get('submission_id') or submission.get('id')} "
@@ -548,8 +562,10 @@ def publish(env: dict[str, str], *, persist_evaluation: bool = True) -> dict[str
                 "api_response": submission,
                 "error": f"{type(exc).__name__}: {exc}",
             })
+            update_sync_status_state(db, "FAILED", error=f"{type(exc).__name__}: {exc}")
             raise
         outbox_path.unlink(missing_ok=True)
+        update_sync_status_state(db, "SUCCESS")
         print(f"[INFO] Supabase confirmed forecast predictions: {persisted}/{expected_submission_count}")
     return {"model_id": model_id, "training_run_id": run_row["id"], "submission": submission}
 
