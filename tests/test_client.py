@@ -2,8 +2,9 @@ import hashlib
 import json
 
 import httpx
+import pytest
 
-from pulso_transmi import PulsoTransmiClient
+from pulso_transmi import PulsoTransmiClient, PulsoTransmiError
 
 
 def handler(request: httpx.Request) -> httpx.Response:
@@ -65,3 +66,44 @@ def test_submit_sends_idempotency_key() -> None:
     with client() as api:
         response = api.submit({"predictions": []}, idempotency_key="run-123456")
     assert response["id"] == "sub_test"
+
+
+def test_submit_retries_transient_server_error() -> None:
+    calls = 0
+
+    def flaky(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            return httpx.Response(503, json={"detail": "temporary"})
+        return httpx.Response(201, json={"submission_id": "sub_retry"})
+
+    with PulsoTransmiClient(
+        base_url="https://example.test",
+        transport=httpx.MockTransport(flaky),
+        backoff_seconds=(0, 0, 0),
+    ) as api:
+        response = api.submit({"predictions": []}, idempotency_key="retry-key")
+
+    assert response["submission_id"] == "sub_retry"
+    assert calls == 3
+
+
+def test_submit_does_not_retry_authentication_error() -> None:
+    calls = 0
+
+    def unauthorized(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(401, json={"detail": "unauthorized"})
+
+    with PulsoTransmiClient(
+        base_url="https://example.test",
+        transport=httpx.MockTransport(unauthorized),
+        backoff_seconds=(0, 0, 0),
+    ) as api:
+        with pytest.raises(PulsoTransmiError) as error:
+            api.submit({"predictions": []}, idempotency_key="auth-key")
+
+    assert error.value.status_code == 401
+    assert calls == 1

@@ -2,19 +2,40 @@ name: pulso-transmi-pipeline
 
 on:
   workflow_dispatch:
-  # Activa el schedule únicamente cuando el profesor publique la frecuencia.
-  # schedule:
-  #   - cron: "7 * * * *"
+  schedule:
+    # GitHub Actions interpreta este horario en UTC.
+    - cron: "*/5 * * * *"
 
 jobs:
   pipeline:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
+    concurrency:
+      group: pulso-transmi-pipeline
+      cancel-in-progress: false
     permissions:
       contents: read
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Validate required secrets
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          PULSO_API_URL: ${{ secrets.PULSO_API_URL }}
+          PULSO_API_KEY: ${{ secrets.PULSO_API_KEY }}
+        run: |
+          missing=0
+          for name in SUPABASE_URL SUPABASE_SERVICE_ROLE_KEY PULSO_API_URL PULSO_API_KEY; do
+            if [ -z "${!name}" ]; then
+              echo "Missing required GitHub Secret: $name"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
 
       - uses: actions/setup-python@v5
         with:
@@ -22,15 +43,36 @@ jobs:
           cache: pip
 
       - name: Install dependencies
-        run: python -m pip install -r requirements.txt
+        run: python -m pip install '.[dev,ml]'
 
       - name: Run tests
         run: pytest -q
 
-      - name: Ingest, train and predict
+      - name: Extract and update source data
         env:
-          PULSO_API_URL: ${{ vars.PULSO_API_URL }}
+          PULSO_API_URL: ${{ secrets.PULSO_API_URL }}
           PULSO_API_KEY: ${{ secrets.PULSO_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-        run: python -m src.pipeline
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: python -u -m src.ingest
+
+      - name: Ingest, train and predict
+        env:
+          PULSO_API_URL: ${{ secrets.PULSO_API_URL }}
+          PULSO_API_KEY: ${{ secrets.PULSO_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: python -u -m src.pipeline
+
+      - name: Upload pending payloads on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-diagnostics
+          path: |
+            artifacts/outbox/
+            artifacts/pipeline-status.json
+            artifacts/baseline/predictions.csv
+          if-no-files-found: ignore

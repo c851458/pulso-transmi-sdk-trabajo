@@ -5,9 +5,10 @@ import hashlib
 import json
 import os
 import subprocess
-import uuid
 import argparse
 import gzip
+import math
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -21,7 +22,13 @@ from pulso_transmi import PulsoTransmiClient
 
 
 ARTIFACT_DIR = Path("artifacts/baseline")
+OUTBOX_DIR = Path("artifacts/outbox")
 TRAIN_SCRIPT = Path("examples/03_supabase_linear_baseline.py")
+REQUIRED_METRICS = ("mae", "rmse", "wape", "accuracy")
+
+
+class WaitingForOpenCycle(RuntimeError):
+    """The API is healthy, but there is no cycle accepting submissions yet."""
 
 
 def load_env(path: Path = Path(".env")) -> dict[str, str]:
@@ -110,6 +117,82 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _validate_finite(value: Any, path: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+        raise RuntimeError(f"Invalid numeric value at {path}: expected a finite number")
+
+
+def validate_metrics(metrics: Any, *, expected_prediction_count: int | None = None) -> dict[str, Any]:
+    if not isinstance(metrics, dict) or not metrics:
+        raise RuntimeError("Metrics are missing or empty")
+    test = metrics.get("test")
+    if not isinstance(test, dict) or not test:
+        raise RuntimeError("metrics.test is missing or empty")
+    missing = [name for name in REQUIRED_METRICS if name not in test]
+    if missing:
+        raise RuntimeError(f"Missing required metrics: {', '.join(missing)}")
+    for name in REQUIRED_METRICS:
+        _validate_finite(test[name], f"metrics.test.{name}")
+    if expected_prediction_count is not None:
+        reported = metrics.get("split", {}).get("test_rows")
+        if reported is not None and int(reported) != expected_prediction_count:
+            raise RuntimeError(
+                f"Prediction count mismatch: metrics reports {reported}, file contains {expected_prediction_count}"
+            )
+    return test
+
+
+def _validate_json_value(value: Any, path: str = "payload") -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if not isinstance(key, str) or not key:
+                raise RuntimeError(f"Invalid payload key at {path}")
+            _validate_json_value(child, f"{path}.{key}")
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            _validate_json_value(child, f"{path}[{index}]")
+    elif isinstance(value, float) and not math.isfinite(value):
+        raise RuntimeError(f"Non-finite value at {path}")
+    elif value is not None and not isinstance(value, (str, int, float, bool)):
+        raise RuntimeError(f"Unsupported value at {path}: {type(value).__name__}")
+
+
+def validate_submission_payload(payload: Any, *, expected_prediction_count: int) -> None:
+    if not isinstance(payload, dict):
+        raise RuntimeError("Submission payload must be an object")
+    required = ("schema_version", "cycle_id", "client_run_id", "data_cutoff", "model", "predictions")
+    missing = [field for field in required if not payload.get(field)]
+    if missing:
+        raise RuntimeError(f"Submission payload is missing required fields: {', '.join(missing)}")
+    if not isinstance(payload["model"], dict) or not payload["model"].get("version"):
+        raise RuntimeError("Submission payload model.version is required")
+    predictions = payload["predictions"]
+    if not isinstance(predictions, list) or len(predictions) != expected_prediction_count or not predictions:
+        raise RuntimeError(
+            f"Submission predictions count is invalid: expected {expected_prediction_count}, got {len(predictions) if isinstance(predictions, list) else 'non-list'}"
+        )
+    for index, prediction in enumerate(predictions):
+        if not isinstance(prediction, dict) or not {"station_id", "target_at", "value"}.issubset(prediction):
+            raise RuntimeError(f"Prediction {index} is incomplete")
+        _validate_finite(prediction["value"], f"payload.predictions[{index}].value")
+    _validate_json_value(payload)
+
+
+def _safe_payload_path(submission_key: str) -> Path:
+    digest = hashlib.sha256(submission_key.encode()).hexdigest()[:24]
+    return OUTBOX_DIR / f"submission-{digest}.json"
+
+
+def write_pipeline_status(status: str, detail: str) -> None:
+    status_path = ARTIFACT_DIR / "pipeline-status.json"
+    status_path.parent.mkdir(parents=True, exist_ok=True)
+    status_path.write_text(json.dumps({"status": status, "detail": detail, "updated_at": utc_now().isoformat()}, indent=2))
+    summary_path = os.getenv("GITHUB_STEP_SUMMARY")
+    if summary_path:
+        with open(summary_path, "a", encoding="utf-8") as summary:
+            summary.write(f"## Pipeline: {status}\n\n{detail}\n")
+
+
 def forecast_open_cycle(api: PulsoTransmiClient, cycle: dict[str, Any], artifact: bytes) -> list[dict[str, Any]]:
     bundle = __import__("joblib").load(ARTIFACT_DIR / "model_and_metrics.joblib")
     stations = api.stations()
@@ -166,13 +249,26 @@ def publish(env: dict[str, str], *, persist_evaluation: bool = True) -> dict[str
     supabase_key = env.get("SUPABASE_SERVICE_ROLE_KEY") or env.get("SUPABASE_KEY")
     api_key = env.get("PULSO_API_KEY")
     api_url = env.get("PULSO_API_URL")
-    if not supabase_url or not supabase_key or not api_key:
-        raise RuntimeError("SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY and PULSO_API_KEY are required")
+    if not supabase_url or not supabase_key or not api_key or not api_url:
+        raise RuntimeError("SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, PULSO_API_URL and PULSO_API_KEY are required")
 
-    metrics = json.loads((ARTIFACT_DIR / "metrics.json").read_text())
+    metrics_path = ARTIFACT_DIR / "metrics.json"
+    if not metrics_path.exists():
+        raise RuntimeError(f"Metrics artifact does not exist: {metrics_path}")
+    metrics = json.loads(metrics_path.read_text())
     predictions_path = ARTIFACT_DIR / "predictions.csv"
     predictions = pd.read_csv(predictions_path) if predictions_path.exists() else pd.DataFrame()
-    artifact = (ARTIFACT_DIR / "model_and_metrics.joblib").read_bytes()
+    expected_prediction_count = len(predictions)
+    if expected_prediction_count == 0 and persist_evaluation:
+        raise RuntimeError("Predictions artifact is empty")
+    metric_values = validate_metrics(metrics, expected_prediction_count=expected_prediction_count or None)
+    required_prediction_columns = {"observed_at", "station_id", "predicted_demand", "actual_demand"}
+    if not predictions.empty and not required_prediction_columns.issubset(predictions.columns):
+        raise RuntimeError(f"Predictions artifact is missing columns: {sorted(required_prediction_columns - set(predictions.columns))}")
+    artifact_path = ARTIFACT_DIR / "model_and_metrics.joblib"
+    if not artifact_path.exists():
+        raise RuntimeError(f"Model artifact does not exist: {artifact_path}")
+    artifact = artifact_path.read_bytes()
     artifact_sha256 = hashlib.sha256(artifact).hexdigest()
     version = f"linear-{artifact_sha256[:12]}"
     now = utc_now()
@@ -226,39 +322,59 @@ def publish(env: dict[str, str], *, persist_evaluation: bool = True) -> dict[str
         metric_payload = [
             {
                 "prediction_id": int(row["id"]),
-                "wape": metrics["test"]["wape"],
-                "accuracy": metrics["test"]["accuracy"],
-                "mae": metrics["test"]["mae"],
-                "rmse": metrics["test"]["rmse"],
+                "wape": metric_values["wape"],
+                "accuracy": metric_values["accuracy"],
+                "mae": metric_values["mae"],
+                "rmse": metric_values["rmse"],
             }
             for row in prediction_rows
         ]
         for start in range(0, len(metric_payload), 500):
             db.insert_many("monitoring_metric", metric_payload[start : start + 500])
-    print(f"[inference] Metrics: MAE={metrics['test']['mae']:.2f} RMSE={metrics['test']['rmse']:.2f} WAPE={metrics['test']['wape']:.4f}")
+    print(f"[INFO] Metrics validated: MAE={metric_values['mae']:.2f} RMSE={metric_values['rmse']:.2f} WAPE={metric_values['wape']:.4f}")
 
     with PulsoTransmiClient(base_url=api_url, api_key=api_key) as api:
+        print("[INFO] Consultando ciclo de predicción")
         cycle = api.current_cycle()
         if cycle is None:
-            print("[submission] No open cycle; publication skipped")
-            return {
-                "model_id": model_id,
-                "training_run_id": run_row["id"],
-                "submission": {"status": "skipped", "reason": "no_open_cycle"},
-            }
+            detail = "There is no open forecast cycle; publication will be retried on the next scheduled run."
+            print(f"[WARNING] No existe un ciclo de predicción abierto")
+            print(f"[WARNING] Publicación aplazada")
+            print(f"[WARNING] Estado: WAITING_FOR_OPEN_CYCLE")
+            write_pipeline_status("WAITING_FOR_OPEN_CYCLE", detail)
+            raise WaitingForOpenCycle(detail)
         cycle_id = str(cycle.get("cycle_id") or cycle["id"])
+        print(f"[INFO] Ciclo: {cycle_id}")
+        print(f"[INFO] Estado del ciclo: {cycle.get('status', 'OPEN')}")
         submission_predictions = forecast_open_cycle(api, cycle, artifact)
+        if not submission_predictions:
+            raise RuntimeError("Inference generated no predictions")
+        target_count = len({str(target["target_at"]) for target in cycle.get("targets", [])})
+        station_count = len(api.stations())
+        if target_count <= 0 or station_count <= 0:
+            raise RuntimeError("Current cycle has no targets or stations")
+        expected_submission_count = target_count * station_count
+        if len(submission_predictions) != expected_submission_count:
+            raise RuntimeError(f"Inference count mismatch: expected {expected_submission_count}, got {len(submission_predictions)}")
+        submission_key = f"{cycle_id}__{version}"
+        client_run_id = hashlib.sha256(submission_key.encode()).hexdigest()[:32]
         payload = {
             "schema_version": "1.0",
             "cycle_id": cycle_id,
-            "client_run_id": str(uuid.uuid4()),
+            "client_run_id": client_run_id,
             "data_cutoff": cycle["data_cutoff"],
             "model": {"version": version, "trained_at": now.isoformat(), "training_data_end": cycle["data_cutoff"], "git_commit": os.getenv("GITHUB_SHA")},
             "predictions": submission_predictions,
         }
-        submission_key = f"{cycle_id}__{version}"
+        validate_submission_payload(payload, expected_prediction_count=expected_submission_count)
+        OUTBOX_DIR.mkdir(parents=True, exist_ok=True)
+        outbox_path = _safe_payload_path(submission_key)
+        outbox_path.write_text(json.dumps({"idempotency_key": submission_key, "payload": payload}, indent=2, allow_nan=False))
+        print("[INFO] Generando submission")
+        print("[INFO] Publicando resultados")
         submission = api.submit(payload, idempotency_key=submission_key)
-        print(f"[submission] Sent cycle={cycle_id} model={version} predictions={len(submission_predictions)} status={submission.get('status')}")
+        outbox_path.unlink(missing_ok=True)
+        print(f"[INFO] API confirmed receipt: cycle={cycle_id} model={version} predictions={len(submission_predictions)}")
     return {"model_id": model_id, "training_run_id": run_row["id"], "submission": submission}
 
 
@@ -267,14 +383,32 @@ def main() -> None:
     parser.add_argument("--publish-only", action="store_true")
     args = parser.parse_args()
     env = load_env()
-    if args.publish_only:
-        db = SupabaseRestClient(env["SUPABASE_URL"], env["SUPABASE_SERVICE_ROLE_KEY"])
-        restore_active_artifacts(db)
-        print("[inference] Restored active model artifact from Supabase")
-        print(json.dumps(publish(env, persist_evaluation=False), indent=2, default=str))
-    else:
-        run_training()
-        print(json.dumps(publish(env), indent=2, default=str))
+    print("[INFO] Pipeline iniciado")
+    try:
+        if args.publish_only:
+            supabase_url = env.get("SUPABASE_URL")
+            supabase_key = env.get("SUPABASE_SERVICE_ROLE_KEY") or env.get("SUPABASE_KEY")
+            if not supabase_url or not supabase_key:
+                raise RuntimeError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required")
+            db = SupabaseRestClient(supabase_url, supabase_key)
+            restore_active_artifacts(db)
+            print("[INFO] Active model artifact restored from Supabase")
+            result = publish(env, persist_evaluation=False)
+        else:
+            run_training()
+            print("[INFO] Training and inference artifacts generated")
+            result = publish(env)
+        print(json.dumps(result, indent=2, default=str))
+        write_pipeline_status("SUCCESS", "Ingesta, inferencia, métricas y publicación confirmadas.")
+        print("[INFO] PIPELINE SUCCESS")
+    except WaitingForOpenCycle:
+        print("[WARNING] PIPELINE WAITING_FOR_OPEN_CYCLE", file=sys.stderr)
+        raise SystemExit(2)
+    except Exception as exc:
+        # Never include environment values or request headers in pipeline logs.
+        write_pipeline_status("FAILED", f"{type(exc).__name__}: {exc}")
+        print(f"[ERROR] PIPELINE FAILED: {type(exc).__name__}: {exc}", file=sys.stderr)
+        raise
 
 
 if __name__ == "__main__":
