@@ -2,9 +2,6 @@ name: pulso-transmi-pipeline
 
 on:
   workflow_dispatch:
-  schedule:
-    # GitHub Actions interpreta este horario en UTC.
-    - cron: "*/5 * * * *"
 
 concurrency:
   group: pulso-transmi-pipeline

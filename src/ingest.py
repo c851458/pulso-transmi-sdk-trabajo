@@ -17,6 +17,7 @@ from pulso_transmi import PulsoTransmiClient
 LOG = logging.getLogger("pulso.ingest")
 BATCH_SIZE = 500
 OVERLAP = timedelta(minutes=30)
+_SYNC_STATUS_AVAILABLE = True
 
 
 def load_env(path: Path = Path(".env")) -> dict[str, str]:
@@ -105,21 +106,31 @@ def update_sync_status(
     error: str | None = None,
 ) -> None:
     """Publish a safe, frontend-readable heartbeat for the latest ingestion."""
+    global _SYNC_STATUS_AVAILABLE
+    if not _SYNC_STATUS_AVAILABLE:
+        return
     now = pd.Timestamp.utcnow().isoformat()
-    previous = db.rows("pipeline_sync_status", select="last_updated_at", id="eq.singleton", limit="1")
-    last_updated_at = now if status == "SUCCESS" else (previous[0].get("last_updated_at") if previous else None)
-    db.upsert_many("pipeline_sync_status", [{
-        "id": "singleton",
-        "status": status,
-        "started_at": started_at,
-        "last_updated_at": last_updated_at,
-        "records_received": records_received,
-        "records_inserted": records_inserted,
-        "records_updated": records_updated,
-        "records_unchanged": records_unchanged,
-        "error": error,
-        "updated_at": now,
-    }], "id")
+    try:
+        previous = db.rows("pipeline_sync_status", select="last_updated_at", id="eq.singleton", limit="1")
+        last_updated_at = now if status == "SUCCESS" else (previous[0].get("last_updated_at") if previous else None)
+        db.upsert_many("pipeline_sync_status", [{
+            "id": "singleton",
+            "status": status,
+            "started_at": started_at,
+            "last_updated_at": last_updated_at,
+            "records_received": records_received,
+            "records_inserted": records_inserted,
+            "records_updated": records_updated,
+            "records_unchanged": records_unchanged,
+            "error": error,
+            "updated_at": now,
+        }], "id")
+    except RuntimeError as exc:
+        if "404" in str(exc):
+            _SYNC_STATUS_AVAILABLE = False
+            LOG.warning("pipeline_sync_status no existe aún; se continúa sin heartbeat hasta aplicar la migración")
+            return
+        raise
 
 
 def latest_timestamp(db: SupabaseRestClient, table: str) -> pd.Timestamp | None:

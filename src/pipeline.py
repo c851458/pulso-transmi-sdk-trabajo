@@ -278,17 +278,23 @@ def persist_execution(
     prediction_count: int,
     payload_sha256: str,
 ) -> None:
-    db.upsert_many("pipeline_execution", [{
-        "run_id": run_id,
-        "model_id": model_id,
-        "cycle_id": cycle_id,
-        "model_version": model_version,
-        "generated_at": generated_at,
-        "metrics": metrics,
-        "prediction_count": prediction_count,
-        "payload_sha256": payload_sha256,
-        "status": "prepared",
-    }], "run_id")
+    try:
+        db.upsert_many("pipeline_execution", [{
+            "run_id": run_id,
+            "model_id": model_id,
+            "cycle_id": cycle_id,
+            "model_version": model_version,
+            "generated_at": generated_at,
+            "metrics": metrics,
+            "prediction_count": prediction_count,
+            "payload_sha256": payload_sha256,
+            "status": "prepared",
+        }], "run_id")
+    except RuntimeError as exc:
+        if "404" in str(exc):
+            print("[WARNING] pipeline_execution no existe aún; se continúa y se conserva el payload en outbox")
+            return
+        raise
 
 
 def _safe_payload_path(submission_key: str) -> Path:
@@ -307,15 +313,21 @@ def write_pipeline_status(status: str, detail: str) -> None:
 
 
 def update_sync_status_state(db: SupabaseRestClient, status: str, *, error: str | None = None) -> None:
-    previous = db.rows("pipeline_sync_status", select="last_updated_at", id="eq.singleton", limit="1")
-    now = utc_now().isoformat()
-    db.upsert_many("pipeline_sync_status", [{
-        "id": "singleton",
-        "status": status,
-        "last_updated_at": now if status == "SUCCESS" else (previous[0].get("last_updated_at") if previous else None),
-        "error": error,
-        "updated_at": now,
-    }], "id")
+    try:
+        previous = db.rows("pipeline_sync_status", select="last_updated_at", id="eq.singleton", limit="1")
+        now = utc_now().isoformat()
+        db.upsert_many("pipeline_sync_status", [{
+            "id": "singleton",
+            "status": status,
+            "last_updated_at": now if status == "SUCCESS" else (previous[0].get("last_updated_at") if previous else None),
+            "error": error,
+            "updated_at": now,
+        }], "id")
+    except RuntimeError as exc:
+        if "404" in str(exc):
+            print("[WARNING] pipeline_sync_status no existe aún; aplique la migración para habilitar el heartbeat")
+            return
+        raise
 
 
 def forecast_open_cycle(api: PulsoTransmiClient, cycle: dict[str, Any], artifact: bytes) -> list[dict[str, Any]]:
