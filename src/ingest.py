@@ -7,6 +7,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 import pandas as pd
@@ -125,7 +126,7 @@ def update_sync_status(
             "error": error,
             "updated_at": now,
         }], "id")
-    except RuntimeError as exc:
+    except (RuntimeError, HTTPError) as exc:
         if "404" in str(exc):
             _SYNC_STATUS_AVAILABLE = False
             LOG.warning("pipeline_sync_status no existe aún; se continúa sin heartbeat hasta aplicar la migración")
