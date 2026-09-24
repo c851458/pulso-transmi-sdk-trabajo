@@ -81,6 +81,9 @@ class SupabaseRestClient:
             raise RuntimeError(f"Supabase returned an unexpected payload for {table}")
         return result
 
+    def rows(self, table: str, **params: str) -> list[dict[str, Any]]:
+        return self.request("GET", table, params=params)
+
     def latest_data_cut_id(self) -> int:
         rows = self.request("GET", "data_cut", params={"select": "id", "order": "queried_at.desc", "limit": "1"})
         if not rows:
