@@ -26,7 +26,7 @@ function metric(row: Row | undefined, key: string) {
 
 export async function GET() {
   try {
-    const [models, training, checks, executions, pipeline, sync] = await Promise.all([
+    const results = await Promise.allSettled([
       table("model", "select=*&order=trained_at.desc&limit=100"),
       table("training_run", "select=*&order=started_at.desc&limit=100"),
       table("model_drift_check", "select=*&order=checked_at.desc&limit=100"),
@@ -34,6 +34,12 @@ export async function GET() {
       table("pipeline_execution", "select=*&order=generated_at.desc&limit=100"),
       table("pipeline_sync_status", "select=*&order=updated_at.desc&limit=10"),
     ]);
+    const read = (index: number) => {
+      const result = results[index];
+      return result.status === "fulfilled" ? result.value : [];
+    };
+    const errors = results.flatMap((result, index) => result.status === "rejected" ? [{ table: TABLES[index], message: result.reason instanceof Error ? result.reason.message : "No fue posible leer la tabla" }] : []);
+    const [models, training, checks, executions, pipeline, sync] = [0, 1, 2, 3, 4, 5].map(read);
 
     const active = models.find((row) => row.status === "active") ?? models[0] ?? null;
     const activeTraining = training.find((row) => row.model_id === active?.id) ?? training[0] ?? null;
@@ -60,7 +66,7 @@ export async function GET() {
     });
 
     return NextResponse.json({
-      updatedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(), sourceErrors: errors,
       model: active ? { id: active.id, version: active.version, status: active.status, algorithm: active.algorithm, trainedAt: active.trained_at, mlflowRunId: active.mlflow_run_id, mlflowModelName: active.mlflow_model_name, mlflowModelVersion: active.mlflow_model_version } : null,
       training: activeTraining ? { metrics: activeTraining.metrics ?? {}, startedAt: activeTraining.started_at, finishedAt: activeTraining.finished_at } : null,
       drift: { checkedAt: source?.checked_at ?? source?.started_at ?? null, psi: featurePsi, drifted, maxPsi: number(source?.drift_score ?? Math.max(...Object.values(featurePsi).map((v) => number(v) ?? 0), 0)), alert: Boolean(source?.drift_alert ?? source?.drift_detected), retrain: Boolean(source?.retrain ?? source?.result?.retrain), reason: source?.reason ?? source?.result?.reason ?? "Sin explicación registrada", reference: source?.reference_window ?? {}, current: source?.current_window ?? {}, thresholds: { psi: threshold, ratio: ratioThreshold, required } },
