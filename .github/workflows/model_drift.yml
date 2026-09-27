@@ -12,7 +12,7 @@ on:
         type: boolean
 
 concurrency:
-  group: pulso-transmi-supabase-writes
+  group: pulso-transmi-model-drift
   cancel-in-progress: false
 
 jobs:

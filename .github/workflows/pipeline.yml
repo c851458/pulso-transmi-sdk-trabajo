@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: pulso-transmi-supabase-writes
+  group: pulso-transmi-pipeline
   cancel-in-progress: false
 
 permissions:

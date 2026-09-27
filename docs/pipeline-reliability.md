@@ -26,8 +26,9 @@ eso podia crear carreras entre ejecuciones.
   el numero esperado de predicciones y el ciclo correcto.
 - El pipeline solo escribe `SUCCESS` despues de confirmar API; de lo contrario
   escribe `FAILED` y devuelve codigo distinto de cero.
-- `concurrency` evita ejecuciones simultáneas y los workflows de drift,
-  ingestión y pipeline comparten el grupo de escrituras a Supabase.
+- `concurrency` evita ejecuciones simultáneas dentro de cada workflow. Cada
+  proceso conserva su propio grupo para que ejecuciones manuales del pipeline
+  no bloqueen indefinidamente el schedule automático del drift.
 - `model_drift.yml` conserva su schedule de `*/10 * * * *` y
   `workflow_dispatch`; `pipeline.yml` y `data_pipeline.yml` son manuales.
 - `supabase/migrations/20260927180000_monitoring_query_indexes.sql` añade
