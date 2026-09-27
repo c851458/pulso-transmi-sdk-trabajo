@@ -121,12 +121,30 @@ Nunca escribas API keys, contraseñas de Supabase ni tokens dentro del código.
 
 ## Supabase y Vercel
 
-Supabase es opcional para persistir ejecuciones, métricas, predicciones y estado
-del modelo. Vercel es opcional y corresponde al bono de visualización. Ninguna de
-las dos plataformas reemplaza el repositorio ni GitHub Actions.
+Supabase persiste ejecuciones, métricas, predicciones y estado del modelo. Vercel
+puede desplegar el dashboard de monitoreo sin reemplazar el repositorio ni
+GitHub Actions.
 
-Consulta [docs/student-project.md](docs/student-project.md) para el flujo completo
-y los entregables.
+### Dashboard MLOps
+
+La aplicación Next.js incluida en `app/` es una capa de visualización de solo
+lectura. Permite consultar el modelo activo, WAPE y ratio de rendimiento, PSI
+por variable, recomendación de reentrenamiento, alertas, historial de drift,
+ejecuciones y versiones del modelo.
+
+```bash
+npm install
+npm run dev
+```
+
+Para desplegarla en Vercel configura `SUPABASE_URL` y
+`SUPABASE_SERVICE_ROLE_KEY` como variables server-side. La service role key no
+se expone al navegador. El endpoint `GET /api/dashboard` únicamente consulta
+las tablas existentes; el refresh automático y el botón `Actualizar` no
+ejecutan drift ni modifican datos.
+
+Consulta [docs/dashboard.md](docs/dashboard.md) para la configuración completa y
+[docs/student-project.md](docs/student-project.md) para el flujo del proyecto.
 
 ## Métrica
 
