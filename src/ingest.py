@@ -8,11 +8,12 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 from urllib.error import HTTPError
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
 import pandas as pd
 
 from pulso_transmi import PulsoTransmiClient
+from src.supabase_resilience import open_supabase
 
 
 LOG = logging.getLogger("pulso.ingest")
@@ -61,7 +62,7 @@ class SupabaseRestClient:
             headers={**self.headers, **(headers or {})},
             method=method,
         )
-        with urlopen(request, timeout=30) as response:
+        with open_supabase(request, timeout=30) as response:
             result = json.loads(response.read())
         if not isinstance(result, list):
             raise RuntimeError(f"Unexpected Supabase response for {table}")

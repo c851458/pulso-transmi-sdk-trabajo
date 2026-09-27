@@ -9,12 +9,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
 import numpy as np
 import pandas as pd
 
 from src.ingest import load_env
+from src.supabase_resilience import open_supabase
 
 
 LOG = logging.getLogger("pulso.drift")
@@ -47,7 +48,7 @@ class SupabaseRestClient:
             headers=self.headers,
             method=method,
         )
-        with urlopen(request, timeout=30) as response:
+        with open_supabase(request, timeout=30) as response:
             result = json.loads(response.read())
         if not isinstance(result, list):
             raise RuntimeError(f"Unexpected Supabase response for {table}")
@@ -108,7 +109,13 @@ def psi(reference: pd.Series, current: pd.Series) -> float:
 
 
 def latest_model(db: SupabaseRestClient) -> dict[str, Any] | None:
-    rows = db.rows("model", select="id,version,trained_at,status", order="trained_at.desc", limit="1")
+    rows = db.rows(
+        "model",
+        select="id,version,trained_at,status",
+        status="eq.active",
+        order="trained_at.desc",
+        limit="1",
+    )
     return rows[0] if rows else None
 
 
@@ -118,6 +125,17 @@ def latest_training_metrics(db: SupabaseRestClient, model_id: int | None) -> dic
         params["model_id"] = f"eq.{model_id}"
     rows = db.rows("training_run", **params)
     return rows[0].get("metrics") or {} if rows else {}
+
+
+def baseline_wape(metrics: dict[str, Any]) -> float:
+    """Read the temporal-test WAPE persisted by the training pipeline."""
+    test_metrics = metrics.get("test")
+    value = test_metrics.get("wape") if isinstance(test_metrics, dict) else metrics.get("wape")
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return value if math.isfinite(value) and value >= 0 else 0.0
 
 
 def evaluate(env: dict[str, str]) -> dict[str, Any]:
@@ -152,9 +170,15 @@ def evaluate(env: dict[str, str]) -> dict[str, Any]:
     model = latest_model(db)
     model_id = int(model["id"]) if model else None
     training_metrics = latest_training_metrics(db, model_id)
-    baseline_wape = float(training_metrics.get("wape", 0.0) or 0.0)
-    performance = {"baseline_wape": baseline_wape, "recent_wape": None, "ratio": None, "alert": False}
-    if model_id is not None and baseline_wape > 0:
+    baseline_wape_value = baseline_wape(training_metrics)
+    performance = {
+        "baseline_wape": baseline_wape_value,
+        "recent_wape": None,
+        "ratio": None,
+        "alert": False,
+        "gate": "unavailable",
+    }
+    if model_id is not None and baseline_wape_value > 0:
         prediction_rows = db.rows(
             "prediction",
             select="prediction,actual_value,target_at",
@@ -168,8 +192,14 @@ def evaluate(env: dict[str, str]) -> dict[str, Any]:
             actual = pd.to_numeric(prediction_frame["actual_value"], errors="coerce")
             predicted = pd.to_numeric(prediction_frame["prediction"], errors="coerce")
             recent_wape = float((actual - predicted).abs().sum() / max(actual.sum(), 1.0))
-            ratio = recent_wape / baseline_wape
-            performance = {"baseline_wape": baseline_wape, "recent_wape": recent_wape, "ratio": ratio, "alert": ratio >= PERFORMANCE_RATIO_THRESHOLD}
+            ratio = recent_wape / baseline_wape_value
+            performance = {
+                "baseline_wape": baseline_wape_value,
+                "recent_wape": recent_wape,
+                "ratio": ratio,
+                "alert": ratio >= PERFORMANCE_RATIO_THRESHOLD,
+                "gate": "fail" if ratio >= PERFORMANCE_RATIO_THRESHOLD else "pass",
+            }
 
     drifted_count = len(feature_alerts)
     drift_alert = drifted_count >= DRIFTED_FEATURES_REQUIRED or performance["alert"]

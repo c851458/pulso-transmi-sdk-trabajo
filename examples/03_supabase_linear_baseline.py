@@ -5,7 +5,7 @@ import os
 import time
 from pathlib import Path
 from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
 import numpy as np
 import pandas as pd
@@ -20,6 +20,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, RobustScaler
 
 from src.mlflow_tracking import log_training_run
+from src.supabase_resilience import open_supabase
 
 
 TABLE_PAGE_SIZE = 1000
@@ -57,7 +58,7 @@ class SupabaseRestClient:
         request = Request(
             f"{self.base_url}/{table}?{query}", headers=self.headers
         )
-        with urlopen(request) as response:
+        with open_supabase(request) as response:
             payload = json.loads(response.read())
         if not isinstance(payload, list):
             raise RuntimeError(f"Supabase returned a non-list payload for {table}")

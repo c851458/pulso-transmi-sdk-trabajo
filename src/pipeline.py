@@ -14,13 +14,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
 import pandas as pd
 import numpy as np
 
 from pulso_transmi import PulsoTransmiClient
 from src.mlflow_tracking import load_metadata
+from src.supabase_resilience import open_supabase
 
 
 ARTIFACT_DIR = Path("artifacts/baseline")
@@ -74,7 +75,7 @@ class SupabaseRestClient:
             method=method,
         )
         try:
-            with urlopen(request) as response:
+            with open_supabase(request) as response:
                 result = json.loads(response.read())
         except Exception as exc:
             raise RuntimeError(f"Supabase {method} {table} failed: {exc}") from exc

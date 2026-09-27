@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from src.drift import execution_error_payload, execution_success_payload
+from src.drift import baseline_wape, execution_error_payload, execution_success_payload
 
 
 def timestamps() -> tuple[datetime, datetime]:
@@ -43,3 +43,15 @@ def test_error_payload_records_failure_without_fake_result() -> None:
     assert payload["status"] == "error"
     assert payload["result"] == {}
     assert payload["error_message"] == "RuntimeError: temporary failure"
+
+
+def test_baseline_wape_reads_training_test_metrics() -> None:
+    assert baseline_wape({"test": {"wape": 0.18}}) == 0.18
+
+
+def test_baseline_wape_supports_legacy_flat_metrics() -> None:
+    assert baseline_wape({"wape": 0.2}) == 0.2
+
+
+def test_baseline_wape_rejects_invalid_values() -> None:
+    assert baseline_wape({"test": {"wape": "not-a-number"}}) == 0.0

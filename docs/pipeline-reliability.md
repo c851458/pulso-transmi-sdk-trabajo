@@ -17,18 +17,22 @@ eso podia crear carreras entre ejecuciones.
 - Outbox local en `artifacts/outbox/`; se elimina solo despues de confirmacion.
 - Upload del outbox y del estado del pipeline como artefacto de GitHub cuando
   la ejecucion falla.
-- Reintentos limitados para timeout, red, 408, 429 y 5xx, con backoff
-  `5s, 15s, 30s` y jitter.
+- Reintentos limitados para lecturas GET de Supabase ante timeout, red, 408,
+  429 y 5xx, con backoff de `1s, 2s`; las escrituras no se reintentan
+  automáticamente para evitar duplicados.
 - Sin reintentos para 400, 401, 403, 404 y otros errores permanentes.
 - La respuesta debe contener `submission_id`, `id` u `operation_id` (o una
   confirmacion booleana), estado valido y, cuando la API lo entrega, exactamente
   el numero esperado de predicciones y el ciclo correcto.
 - El pipeline solo escribe `SUCCESS` despues de confirmar API; de lo contrario
   escribe `FAILED` y devuelve codigo distinto de cero.
-- `concurrency` evita ejecuciones simultaneas.
-- Solo `pipeline.yml` tiene un schedule de publicación (`*/5 * * * *`).
-  `data_pipeline.yml` y `model_drift.yml` conservan `workflow_dispatch` para
-  pruebas o ejecuciones excepcionales y no publican en paralelo.
+- `concurrency` evita ejecuciones simultáneas y los workflows de drift,
+  ingestión y pipeline comparten el grupo de escrituras a Supabase.
+- `model_drift.yml` conserva su schedule de `*/10 * * * *` y
+  `workflow_dispatch`; `pipeline.yml` y `data_pipeline.yml` son manuales.
+- `supabase/migrations/20260927180000_monitoring_query_indexes.sql` añade
+  índices no destructivos para las consultas frecuentes de monitoreo. Debe
+  aplicarse desde Supabase cuando la Data API vuelva a estar disponible.
 - `pipeline_sync_status` expone al portal el estado de sincronización y
   `last_updated_at`; el frontend puede marcar datos como stale según su propia
   ventana de frescura sin ejecutar la ingesta.
