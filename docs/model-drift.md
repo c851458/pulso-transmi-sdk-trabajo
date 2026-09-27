@@ -12,6 +12,11 @@ flujo cada diez minutos y también permite `workflow_dispatch`:
 6. persistencia de la auditoría de cada ejecución en `public.model_drift_execution`;
 7. reentrenamiento y publicación solo cuando la decisión sea `retrain=true`.
 
+Si la publicación del modelo actual falla por una indisponibilidad transitoria
+de la API o de Supabase, el job intenta publicar hasta tres veces, con esperas
+de 60 y 120 segundos. Si todos fallan, la siguiente ejecución programada de
+10 minutos vuelve a intentarlo. No existe un retry infinito.
+
 ## Umbrales por defecto
 
 | Variable | Valor | Acción |
