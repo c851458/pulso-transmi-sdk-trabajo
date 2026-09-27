@@ -30,7 +30,7 @@ export async function GET() {
       table("model", "select=*&order=trained_at.desc&limit=100"),
       table("training_run", "select=*&order=started_at.desc&limit=100"),
       table("model_drift_check", "select=*&order=checked_at.desc&limit=100"),
-      table("model_drift_execution", "select=*&order=started_at.desc&limit=100"),
+      table("model_drift_execution", "select=id,execution_id,started_at,completed_at,status,model_id,model_version,reference_window,current_window,analyzed_features,feature_psi,drifted_features,thresholds,performance,drift_score,drift_detected,error_message&order=started_at.desc&limit=50"),
       table("pipeline_execution", "select=*&order=generated_at.desc&limit=100"),
       table("pipeline_sync_status", "select=*&order=updated_at.desc&limit=10"),
     ]);
