@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 const TABLES = ["model", "training_run", "model_drift_check", "model_drift_execution", "pipeline_execution", "pipeline_sync_status"] as const;
 type Row = Record<string, any>;
+export const revalidate = 300;
 
 function number(value: unknown): number | null {
   const n = typeof value === "number" ? value : Number(value);
@@ -14,25 +15,26 @@ async function table(name: string, query: string) {
   if (!url || !key) throw new Error("Faltan SUPABASE_URL o SUPABASE_SERVICE_ROLE_KEY en el entorno del servidor");
   const response = await fetch(`${url.replace(/\/$/, "")}/rest/v1/${name}?${query}`, {
     headers: { apikey: key, Authorization: `Bearer ${key}` },
-    next: { revalidate: 60 },
+    signal: AbortSignal.timeout(10000),
+    next: { revalidate: 300 },
   });
   if (!response.ok) throw new Error(`Supabase ${name}: ${response.status}`);
   return response.json() as Promise<Row[]>;
 }
 
 function metric(row: Row | undefined, key: string) {
-  return number(row?.metrics?.[key] ?? row?.performance?.[key]);
+  return number(row?.metrics?.[key] ?? row?.metrics?.test?.[key] ?? row?.performance?.[key]);
 }
 
 export async function GET() {
   try {
     const results = await Promise.allSettled([
-      table("model", "select=*&order=trained_at.desc&limit=100"),
-      table("training_run", "select=*&order=started_at.desc&limit=100"),
-      table("model_drift_check", "select=*&order=checked_at.desc&limit=100"),
-      table("model_drift_execution", "select=id,execution_id,started_at,completed_at,status,model_id,model_version,reference_window,current_window,analyzed_features,feature_psi,drifted_features,thresholds,performance,drift_score,drift_detected,error_message&order=started_at.desc&limit=50"),
-      table("pipeline_execution", "select=*&order=generated_at.desc&limit=100"),
-      table("pipeline_sync_status", "select=*&order=updated_at.desc&limit=10"),
+      table("model", "select=id,version,algorithm,status,trained_at,mlflow_run_id,mlflow_model_name,mlflow_model_version&order=trained_at.desc&limit=20"),
+      table("training_run", "select=id,model_id,started_at,finished_at,metrics&order=started_at.desc&limit=50"),
+      table("model_drift_check", "select=id,checked_at,model_id,model_version,reference_window,current_window,thresholds,feature_psi,drifted_features,performance,drift_alert,retrain,reason&order=checked_at.desc&limit=50"),
+      table("model_drift_execution", "select=id,execution_id,started_at,completed_at,status,model_id,model_version,reference_window,current_window,analyzed_features,feature_psi,drifted_features,thresholds,performance,drift_score,drift_detected,error_message&order=started_at.desc&limit=20"),
+      table("pipeline_execution", "select=run_id,model_id,cycle_id,model_version,generated_at,metrics,prediction_count,payload_sha256,status,error,confirmed_at&order=generated_at.desc&limit=20"),
+      table("pipeline_sync_status", "select=id,status,started_at,last_updated_at,records_received,records_inserted,records_updated,records_unchanged,error,updated_at&order=updated_at.desc&limit=1"),
     ]);
     const read = (index: number) => {
       const result = results[index];
@@ -47,7 +49,8 @@ export async function GET() {
     const latestExecution = executions[0] ?? null;
     const latestSuccessful = executions.find((row) => row.status === "success") ?? null;
     const latestFailed = executions.find((row) => row.status === "error") ?? null;
-    const source = latestExecution ?? latestCheck;
+    // The check is the authoritative decision record; execution stores the audit trail.
+    const source = latestCheck ?? latestExecution;
     const performance = source?.performance ?? latestCheck?.performance ?? {};
     const featurePsi = source?.feature_psi ?? latestCheck?.feature_psi ?? {};
     const drifted = Array.isArray(source?.drifted_features) ? source.drifted_features : [];

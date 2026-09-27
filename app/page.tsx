@@ -18,7 +18,7 @@ function LineChart({ points, threshold }: { points: Array<{ date: string; ratio:
 export default function Dashboard() {
   const [data, setData] = useState<Data | null>(null); const [error, setError] = useState(""); const [loading, setLoading] = useState(true); const [lastRefresh, setLastRefresh] = useState<Date | null>(null); const [filter, setFilter] = useState("all");
   const load = useCallback(async () => { setLoading(true); try { const response = await fetch("/api/dashboard", { cache: "no-store" }); const payload = await response.json(); if (!response.ok) throw new Error(payload.error); setData(payload); setError(""); setLastRefresh(new Date()); } catch (e) { setError(e instanceof Error ? e.message : "Error consultando datos"); } finally { setLoading(false); } }, []);
-  useEffect(() => { load(); const timer = setInterval(load, 60000); return () => clearInterval(timer); }, [load]);
+  useEffect(() => { load(); const timer = setInterval(load, 300000); return () => clearInterval(timer); }, [load]);
   const rows = useMemo(() => data?.executions?.history?.filter((row: any) => filter === "all" || (filter === "alert" ? row.alert : row.status === filter)) ?? [], [data, filter]);
   if (loading && !data) return <main className="shell"><div className="loading">Cargando observabilidad del modelo…</div></main>;
   if (error && !data) return <main className="shell"><div className="error">{error}<button onClick={load}>Reintentar</button></div></main>;

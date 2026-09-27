@@ -36,8 +36,10 @@ npm install
 npm run dev
 ```
 
-El refresh automático ocurre cada 60 segundos y el botón `Actualizar` solo hace
-una consulta GET. No existe ninguna ruta POST ni acción que dispare el pipeline.
+El refresh automático ocurre cada 5 minutos y el botón `Actualizar` solo hace
+una consulta GET. El endpoint consulta únicamente columnas necesarias y excluye
+artefactos del modelo y respuestas JSON grandes de los listados. No existe
+ninguna ruta POST ni acción que dispare el pipeline.
 
 ## Validación de disponibilidad
 
