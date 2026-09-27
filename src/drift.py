@@ -4,6 +4,7 @@ import json
 import logging
 import math
 import os
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -200,6 +201,56 @@ def evaluate(env: dict[str, str]) -> dict[str, Any]:
     return report
 
 
+def _drift_score(report: dict[str, Any]) -> float | None:
+    """Return the largest finite PSI while preserving the original report."""
+    scores = report.get("feature_psi", {})
+    finite_scores = [float(value) for value in scores.values() if math.isfinite(float(value))]
+    return max(finite_scores) if finite_scores else None
+
+
+def execution_success_payload(
+    execution_id: str,
+    started_at: datetime,
+    completed_at: datetime,
+    report: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "execution_id": execution_id,
+        "started_at": started_at.isoformat(),
+        "completed_at": completed_at.isoformat(),
+        "status": "success",
+        "model_id": report.get("model_id"),
+        "model_version": report.get("model_version"),
+        "reference_window": report.get("reference_window", {}),
+        "current_window": report.get("current_window", {}),
+        "analyzed_features": list(report.get("feature_psi", {}).keys()),
+        "feature_psi": report.get("feature_psi", {}),
+        "drifted_features": report.get("drifted_features", []),
+        "thresholds": report.get("thresholds", {}),
+        "performance": report.get("performance", {}),
+        "drift_score": _drift_score(report),
+        "drift_detected": report.get("drift_alert"),
+        "result": report,
+        "error_message": None,
+    }
+
+
+def execution_error_payload(
+    execution_id: str,
+    started_at: datetime,
+    completed_at: datetime,
+    error: Exception,
+) -> dict[str, Any]:
+    return {
+        "execution_id": execution_id,
+        "started_at": started_at.isoformat(),
+        "completed_at": completed_at.isoformat(),
+        "status": "error",
+        "result": {},
+        "error_message": f"{type(error).__name__}: {error}",
+    }
+
+
 def write_output(report: dict[str, Any]) -> None:
     output_path = os.getenv("GITHUB_OUTPUT")
     if output_path:
@@ -216,12 +267,34 @@ def main() -> None:
     missing = [key for key in required if not env.get(key)]
     if missing:
         raise RuntimeError(f"Missing required variables: {', '.join(missing)}")
-    report = evaluate(env)
-    LOG.info("Ventanas: referencia=%d actual=%d", report["reference_window"]["rows"], report["current_window"]["rows"])
-    LOG.info("PSI por variable: %s", json.dumps(report["feature_psi"], sort_keys=True))
-    LOG.info("Drift alert=%s retrain=%s reason=%s", report["drift_alert"], report["retrain"], report["reason"])
-    write_output(report)
-    LOG.info("Evaluación de drift finalizada")
+    execution_id = str(uuid.uuid4())
+    started_at = utc_now()
+    history_db = SupabaseRestClient(env["SUPABASE_URL"], env["SUPABASE_SERVICE_ROLE_KEY"])
+    try:
+        report = evaluate(env)
+        completed_at = utc_now()
+        history_db.insert(
+            "model_drift_execution",
+            execution_success_payload(execution_id, started_at, completed_at, report),
+        )
+        LOG.info("Ejecución de drift registrada: execution_id=%s status=success", execution_id)
+        LOG.info("Ventanas: referencia=%d actual=%d", report["reference_window"]["rows"], report["current_window"]["rows"])
+        LOG.info("PSI por variable: %s", json.dumps(report["feature_psi"], sort_keys=True))
+        LOG.info("Drift alert=%s retrain=%s reason=%s", report["drift_alert"], report["retrain"], report["reason"])
+        write_output(report)
+        LOG.info("Evaluación de drift finalizada")
+    except Exception as error:
+        completed_at = utc_now()
+        try:
+            history_db.insert(
+                "model_drift_execution",
+                execution_error_payload(execution_id, started_at, completed_at, error),
+            )
+            LOG.info("Ejecución de drift registrada: execution_id=%s status=error", execution_id)
+        except Exception:
+            LOG.exception("No fue posible registrar el error de drift: execution_id=%s", execution_id)
+        LOG.error("Error evaluando drift; la próxima ejecución podrá reintentarlo: %s", error)
+        raise
 
 
 if __name__ == "__main__":

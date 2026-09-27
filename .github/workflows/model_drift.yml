@@ -1,6 +1,8 @@
 name: pulso-transmi-model-drift
 
 on:
+  schedule:
+    - cron: "*/10 * * * *"
   workflow_dispatch:
     inputs:
       force_retrain:
@@ -75,6 +77,15 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           GITHUB_SHA: ${{ github.sha }}
+          MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
+          MLFLOW_USERNAME: ${{ secrets.MLFLOW_USERNAME }}
+          MLFLOW_PASSWORD: ${{ secrets.MLFLOW_PASSWORD }}
+          DAGSHUB_REPO_OWNER: ${{ vars.DAGSHUB_REPO_OWNER }}
+          DAGSHUB_REPO_NAME: ${{ vars.DAGSHUB_REPO_NAME }}
+          DAGSHUB_TOKEN: ${{ secrets.DAGSHUB_TOKEN }}
+          MLFLOW_EXPERIMENT_NAME: ${{ vars.MLFLOW_EXPERIMENT_NAME || 'pulso-transmi' }}
+          MLFLOW_REGISTERED_MODEL_NAME: ${{ vars.MLFLOW_REGISTERED_MODEL_NAME || 'pulso-transmi-demand' }}
+          MLFLOW_ENVIRONMENT: production
         run: python -u -m src.pipeline
       - name: Publish current model predictions
         if: steps.drift.outputs.retrain != 'true' && inputs.force_retrain != true

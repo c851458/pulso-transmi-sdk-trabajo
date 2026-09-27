@@ -20,6 +20,7 @@ import pandas as pd
 import numpy as np
 
 from pulso_transmi import PulsoTransmiClient
+from src.mlflow_tracking import load_metadata
 
 
 ARTIFACT_DIR = Path("artifacts/baseline")
@@ -137,7 +138,16 @@ class SupabaseRestClient:
 
 
 def run_training() -> None:
-    subprocess.run([os.environ.get("PYTHON", "python3"), str(TRAIN_SCRIPT)], check=True)
+    environment = os.environ.copy()
+    project_root = str(Path(__file__).resolve().parents[1])
+    environment["PYTHONPATH"] = os.pathsep.join(
+        value for value in (project_root, environment.get("PYTHONPATH")) if value
+    )
+    subprocess.run(
+        [os.environ.get("PYTHON", "python3"), str(TRAIN_SCRIPT)],
+        check=True,
+        env=environment,
+    )
 
 
 def utc_now() -> datetime:
@@ -417,15 +427,33 @@ def publish(env: dict[str, str], *, persist_evaluation: bool = True) -> dict[str
     artifact_sha256 = hashlib.sha256(artifact).hexdigest()
     algorithm_name = str(metrics.get("selection", {}).get("selected_model", "model"))
     version = f"{algorithm_name}-{artifact_sha256[:12]}"
+    mlflow_metadata = load_metadata(ARTIFACT_DIR)
     now = utc_now()
     db = SupabaseRestClient(supabase_url, supabase_key)
     data_cut_id = db.latest_data_cut_id()
     existing_model = db.find_model(version)
     if existing_model:
         model_id = int(existing_model["id"])
-        run_row = {"id": "reused"}
         trained_at = str(existing_model["trained_at"])
         print(f"[inference] Reusing model version={version} id={model_id}")
+        if mlflow_metadata:
+            db.update("model", {"id": f"eq.{model_id}"}, {
+                "mlflow_run_id": mlflow_metadata.get("run_id"),
+                "mlflow_model_name": mlflow_metadata.get("registered_model_name"),
+                "mlflow_model_version": mlflow_metadata.get("model_version"),
+            })
+            run_row = db.insert("training_run", {
+                "model_id": model_id,
+                "data_cut_id": data_cut_id,
+                "cutoff_at": now.isoformat(),
+                "parameters": {"script": str(TRAIN_SCRIPT), "artifact_sha256": artifact_sha256},
+                "metrics": metrics,
+                "mlflow_run_id": mlflow_metadata.get("run_id"),
+                "started_at": now.isoformat(),
+                "finished_at": now.isoformat(),
+            })
+        else:
+            run_row = {"id": "reused"}
     else:
         algorithm = algorithm_name
         compressed_artifact = gzip.compress(artifact, compresslevel=9)
@@ -438,6 +466,9 @@ def publish(env: dict[str, str], *, persist_evaluation: bool = True) -> dict[str
             "trained_at": now.isoformat(),
             "artifact_base64": base64.b64encode(compressed_artifact).decode("ascii"),
             "artifact_sha256": artifact_sha256,
+            "mlflow_run_id": mlflow_metadata.get("run_id"),
+            "mlflow_model_name": mlflow_metadata.get("registered_model_name"),
+            "mlflow_model_version": mlflow_metadata.get("model_version"),
         })
         model_id = int(model_row["id"])
         trained_at = now.isoformat()
@@ -447,6 +478,7 @@ def publish(env: dict[str, str], *, persist_evaluation: bool = True) -> dict[str
             "cutoff_at": now.isoformat(),
             "parameters": {"script": str(TRAIN_SCRIPT), "artifact_sha256": artifact_sha256},
             "metrics": metrics,
+            "mlflow_run_id": mlflow_metadata.get("run_id"),
             "started_at": now.isoformat(),
             "finished_at": now.isoformat(),
         })

@@ -1,7 +1,10 @@
 .env
 .venv/
+node_modules/
+.next/
 __pycache__/
 *.py[cod]
+*.tsbuildinfo
 .pytest_cache/
 .ruff_cache/
 .supabase/

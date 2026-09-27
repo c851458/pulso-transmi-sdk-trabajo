@@ -19,6 +19,8 @@ from sklearn.model_selection import TimeSeriesSplit, cross_validate
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, RobustScaler
 
+from src.mlflow_tracking import log_training_run
+
 
 TABLE_PAGE_SIZE = 1000
 TRAIN_FRACTION = 0.8
@@ -329,6 +331,36 @@ def main() -> None:
             "predicted_demand": predictions,
         }
     ).to_csv(ARTIFACT_DIR / "predictions.csv", index=False)
+    tracking_params = {
+        "model_name": selected_name,
+        "target": target,
+        "predictors": predictors,
+        "candidate_models": list(build_models().keys()),
+        "train_fraction": TRAIN_FRACTION,
+        "test_fraction": 1 - TRAIN_FRACTION,
+        "cv_splits": 5,
+        "random_state": RANDOM_STATE,
+        "dataset_tables": metrics["dataset"]["table"],
+        "dataset_rows": metrics["dataset"]["observations"],
+        "window_start": dataset["observed_at"].min().isoformat(),
+        "window_end": dataset["observed_at"].max().isoformat(),
+    }
+    tracking_tags = {
+        "project": "pulso-transmi",
+        "model_type": selected_name,
+        "environment": os.getenv("MLFLOW_ENVIRONMENT", "development"),
+        "dataset_version": os.getenv("DATASET_VERSION", "supabase-current"),
+        "training_type": os.getenv("TRAINING_TYPE", "baseline-or-drift-retrain"),
+        "git_commit": os.getenv("GITHUB_SHA", "unknown"),
+    }
+    metadata = log_training_run(
+        model=model,
+        metrics=metrics,
+        artifact_dir=ARTIFACT_DIR,
+        params=tracking_params,
+        tags=tracking_tags,
+    )
+    print(json.dumps({"mlflow": metadata}, indent=2))
     print(json.dumps(metrics, indent=2))
     print(f"\nSaved results to {ARTIFACT_DIR}")
 

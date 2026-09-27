@@ -1,7 +1,7 @@
 # Control de drift y reentrenamiento
 
 La Action [model_drift.yml](../.github/workflows/model_drift.yml) ejecuta este
-flujo cada dos horas y también permite `workflow_dispatch`:
+flujo cada diez minutos y también permite `workflow_dispatch`:
 
 1. ingesta incremental de API a Supabase;
 2. comparación de una ventana de referencia de 7 días contra los 7 días más
@@ -9,7 +9,8 @@ flujo cada dos horas y también permite `workflow_dispatch`:
 3. cálculo de PSI para demanda, eventos y variables meteorológicas;
 4. comparación de WAPE reciente contra el WAPE del entrenamiento;
 5. persistencia del diagnóstico en `public.model_drift_check`;
-6. reentrenamiento y publicación solo cuando la decisión sea `retrain=true`.
+6. persistencia de la auditoría de cada ejecución en `public.model_drift_execution`;
+7. reentrenamiento y publicación solo cuando la decisión sea `retrain=true`.
 
 ## Umbrales por defecto
 
@@ -30,6 +31,7 @@ actuales. `event_intensity` tuvo PSI `3.8656`, pero la alerta global quedó en
 `false` porque solo una variable superó el umbral y el cooldown estaba activo.
 
 El diagnóstico se conserva con ventanas, PSI, WAPE, umbrales, modelo, decisión
-y motivo en `model_drift_check`. Un fallo de una ejecución marca el job como
-fallido y deja las siguientes ejecuciones programadas disponibles para
-reintentar.
+y motivo en `model_drift_check`. La auditoría `model_drift_execution` conserva
+además ejecuciones exitosas y fallidas, con su identificador, timestamps, estado
+y mensaje de error. Un fallo marca el job como fallido y deja las siguientes
+ejecuciones programadas disponibles para reintentar.
