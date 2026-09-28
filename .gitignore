@@ -16,3 +16,5 @@ data/
 *.egg-info/
 .vercel/
 .env.local
+mlruns/
+mlflow.db

@@ -37,3 +37,11 @@ def test_explicit_mlflow_uri_has_priority(monkeypatch) -> None:
 
 def test_load_metadata_returns_empty_for_missing_file(tmp_path: Path) -> None:
     assert mlflow_tracking.load_metadata(tmp_path) == {}
+
+
+def test_local_fallback_uses_sqlite_backend(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    for name in ("MLFLOW_TRACKING_URI", "DAGSHUB_REPO_OWNER", "DAGSHUB_REPO_NAME"):
+        monkeypatch.delenv(name, raising=False)
+
+    assert mlflow_tracking._tracking_uri() == f"sqlite:///{tmp_path / 'mlflow.db'}"

@@ -54,7 +54,8 @@ def _tracking_uri() -> str:
     repository = _config_value("DAGSHUB_REPO_NAME")
     if owner and repository:
         return f"https://dagshub.com/{owner.lstrip('@')}/{repository}.mlflow"
-    return Path("mlruns").resolve().as_uri()
+    # MLflow 3 rejects the ./mlruns file store; SQLite is its supported local backend.
+    return f"sqlite:///{Path('mlflow.db').resolve()}"
 
 
 def log_training_run(
