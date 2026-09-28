@@ -48,7 +48,7 @@ eso podia crear carreras entre ejecuciones.
   `prune_model_history`. Cada vez que se registra un modelo nuevo, el pipeline
   borra las predicciones de evaluación y `monitoring_metric` de los modelos
   anteriores, los marca `retired` y elimina su `artifact_base64` (el artefacto
-  sigue en MLflow). Las predicciones enviadas a la API, las observaciones y las
+  se conserva en MLflow solo si el tracking apunta a DagsHub). Las predicciones enviadas a la API, las observaciones y las
   ejecuciones se conservan. Sin esta retención, el reentrenamiento periódico llenó
   el disco de 2 GB del plan free y Postgres dejó de responder (HTTP 503 PGRST002).
 - `supabase/migrations/20260927210000_monitoring_metric_prediction_idx.sql`
