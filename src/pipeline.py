@@ -223,10 +223,13 @@ def prune_superseded_models(db: SupabaseRestClient, keep_model_id: int) -> None:
     try:
         result = db.prune_model_history(keep_model_id)
     except RuntimeError as exc:
+        # Housekeeping must not block publication; the next new model prunes
+        # everything older than itself again.
         if "404" in str(exc):
             print("[WARNING] prune_model_history no existe aún; aplica la migración de retención")
-            return
-        raise
+        else:
+            print(f"[WARNING] No se pudo podar el historial de modelos: {exc}")
+        return
     print(
         f"[INFO] Historial podado: métricas={result.get('metrics_deleted', 0)} "
         f"predicciones={result.get('predictions_deleted', 0)} modelos_retirados={result.get('models_retired', 0)}"

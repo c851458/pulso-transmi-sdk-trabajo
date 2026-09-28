@@ -50,6 +50,10 @@ eso podia crear carreras entre ejecuciones.
   sigue en MLflow). Las predicciones enviadas a la API, las observaciones y las
   ejecuciones se conservan. Sin esta retención, el reentrenamiento periódico llenó
   el disco de 2 GB del plan free y Postgres dejó de responder (HTTP 503 PGRST002).
+- `supabase/migrations/20260927210000_monitoring_metric_prediction_idx.sql`
+  indexa `monitoring_metric.prediction_id`; sin él la poda excedía el
+  `statement_timeout` de 8 s de la API. Si la poda falla, el pipeline solo
+  registra una advertencia y continúa con la publicación.
 - `pipeline_sync_status` expone al portal el estado de sincronización y
   `last_updated_at`; el frontend puede marcar datos como stale según su propia
   ventana de frescura sin ejecutar la ingesta.
