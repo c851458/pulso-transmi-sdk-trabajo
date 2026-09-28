@@ -33,14 +33,15 @@ eso podia crear carreras entre ejecuciones.
   (máximo cuatro conexiones y keep-alive). Solo las lecturas `GET` tienen
   reintentos acotados; las escrituras no se repiten automáticamente.
 - `model_drift.yml` conserva su schedule de `*/10 * * * *` y
-  `workflow_dispatch`; `pipeline.yml` ejecuta ingesta, entrenamiento y publicación
+  `workflow_dispatch`. GitHub no garantiza esa frecuencia (en la práctica corre
+  con horas de retraso); se recomienda dispararlo también desde cron-job.org y
+  retirar entonces su `schedule`. `pipeline.yml` ejecuta ingesta, entrenamiento y publicación
   cada diez minutos mediante `workflow_dispatch` disparado desde cron-job.org; no
   tiene `schedule` propio para no duplicar ejecuciones.
 - `data_pipeline.yml` permanece manual porque la ingesta ya forma parte del pipeline
   automático y un segundo schedule produciría ejecuciones duplicadas.
 - `supabase/migrations/20260927180000_monitoring_query_indexes.sql` añade
-  índices no destructivos para las consultas frecuentes de monitoreo. Debe
-  aplicarse desde Supabase cuando la Data API vuelva a estar disponible.
+  índices no destructivos para las consultas frecuentes de monitoreo.
 - `supabase/migrations/20260927190000_cpu_query_indexes.sql` añade índices
   compuestos para las consultas incrementales de ingestión y drift.
 - `supabase/migrations/20260927200000_model_history_retention.sql` crea
@@ -54,6 +55,9 @@ eso podia crear carreras entre ejecuciones.
   indexa `monitoring_metric.prediction_id`; sin él la poda excedía el
   `statement_timeout` de 8 s de la API. Si la poda falla, el pipeline solo
   registra una advertencia y continúa con la publicación.
+- Todas las migraciones están aplicadas en el proyecto Supabase actual
+  (`kfkrtngrpvbgdluvwcnc`). El detalle del incidente de disco lleno está en
+  `docs/work-log-2026-09-27.md`.
 - `pipeline_sync_status` expone al portal el estado de sincronización y
   `last_updated_at`; el frontend puede marcar datos como stale según su propia
   ventana de frescura sin ejecutar la ingesta.

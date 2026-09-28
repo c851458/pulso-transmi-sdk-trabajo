@@ -35,7 +35,9 @@ y `DAGSHUB_TOKEN` como Secret. `MLFLOW_TRACKING_URI` tiene prioridad si se
 necesita usar otra instancia compatible.
 
 Si no se define ninguna configuración remota, se utiliza tracking local en
-`mlruns/`.
+`mlflow.db` (SQLite). MLflow 3 ya no acepta el almacenamiento de archivos
+`mlruns/`. En GitHub Actions ese registro local se pierde al terminar el job; para
+conservar el historial de experimentos configure DagsHub como se indica arriba.
 
 ## Datos registrados
 
