@@ -41,16 +41,16 @@ def load_env(path: Path = Path(".env")) -> dict[str, str]:
 
 
 def fetch_dataset(client: SupabaseRestClient) -> pd.DataFrame:
-    stations = client.get_all(
+    stations = pd.DataFrame(client.get_all(
         "station", "station_id,station_name,corridor,latitude,longitude"
-    )
-    observations = client.get_all(
+    ))
+    observations = pd.DataFrame(client.get_all(
         "demand_observation", "station_id,observed_at,demand"
-    )
-    context = client.get_all(
+    ))
+    context = pd.DataFrame(client.get_all(
         "context_observation",
         "observed_at,event_intensity,rain_forecast,rain_mm,temperature_c,temperature_forecast",
-    )
+    ))
     observations["observed_at"] = pd.to_datetime(
         observations["observed_at"], utc=True
     )
