@@ -13,15 +13,13 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode
-from urllib.request import Request
 
 import pandas as pd
 import numpy as np
 
 from pulso_transmi import PulsoTransmiClient
 from src.mlflow_tracking import load_metadata
-from src.supabase_resilience import open_supabase
+from src.supabase_resilience import SupabaseRestClient
 
 
 ARTIFACT_DIR = Path("artifacts/baseline")
@@ -45,97 +43,6 @@ def load_env(path: Path = Path(".env")) -> dict[str, str]:
                 values[key.strip()] = value.strip().strip('"').strip("'")
     values.update({key: value for key, value in os.environ.items() if key in values or key.startswith(("SUPABASE_", "PULSO_"))})
     return values
-
-
-class SupabaseRestClient:
-    def __init__(self, url: str, key: str) -> None:
-        self.base_url = url.rstrip("/") + "/rest/v1"
-        self.headers = {
-            "apikey": key,
-            "Authorization": f"Bearer {key}",
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-            "Prefer": "return=representation",
-        }
-
-    def request(
-        self,
-        method: str,
-        table: str,
-        payload: Any = None,
-        *,
-        params: dict[str, str] | None = None,
-        headers: dict[str, str] | None = None,
-    ) -> list[dict[str, Any]]:
-        query = f"?{urlencode(params)}" if params else ""
-        request = Request(
-            f"{self.base_url}/{table}{query}",
-            data=None if payload is None else json.dumps(payload, default=str).encode(),
-            headers={**self.headers, **(headers or {})},
-            method=method,
-        )
-        try:
-            with open_supabase(request) as response:
-                result = json.loads(response.read())
-        except Exception as exc:
-            raise RuntimeError(f"Supabase {method} {table} failed: {exc}") from exc
-        if not isinstance(result, list):
-            raise RuntimeError(f"Supabase returned an unexpected payload for {table}")
-        return result
-
-    def rows(self, table: str, **params: str) -> list[dict[str, Any]]:
-        return self.request("GET", table, params=params)
-
-    def latest_data_cut_id(self) -> int:
-        rows = self.request("GET", "data_cut", params={"select": "id", "order": "queried_at.desc", "limit": "1"})
-        if not rows:
-            raise RuntimeError("No data_cut exists in Supabase")
-        return int(rows[0]["id"])
-
-    def find_model(self, version: str) -> dict[str, Any] | None:
-        rows = self.request("GET", "model", params={"select": "id,version,trained_at", "version": f"eq.{version}", "limit": "1"})
-        return rows[0] if rows else None
-
-    def active_model(self) -> dict[str, Any] | None:
-        rows = self.request(
-            "GET",
-            "model",
-            params={"select": "id,version,algorithm,artifact_base64,artifact_sha256", "status": "eq.active", "order": "trained_at.desc", "limit": "1"},
-        )
-        return rows[0] if rows else None
-
-    def latest_training_metrics(self, model_id: int) -> dict[str, Any]:
-        rows = self.request(
-            "GET",
-            "training_run",
-            params={"select": "metrics", "model_id": f"eq.{model_id}", "order": "started_at.desc", "limit": "1"},
-        )
-        return rows[0].get("metrics") or {} if rows else {}
-
-    def insert(self, table: str, payload: dict[str, Any]) -> dict[str, Any]:
-        rows = self.request("POST", table, payload)
-        if not rows:
-            raise RuntimeError(f"Supabase did not return the inserted {table}")
-        return rows[0]
-
-    def insert_many(self, table: str, payload: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        if not payload:
-            return []
-        return self.request("POST", table, payload)
-
-    def upsert_many(self, table: str, payload: list[dict[str, Any]], conflict_columns: str) -> list[dict[str, Any]]:
-        if not payload:
-            return []
-        return self.request(
-            "POST",
-            table,
-            payload,
-            params={"on_conflict": conflict_columns},
-            headers={"Prefer": "return=representation,resolution=merge-duplicates"},
-        )
-
-    def update(self, table: str, filters: dict[str, str], payload: dict[str, Any]) -> list[dict[str, Any]]:
-        return self.request("PATCH", table, payload, params=filters)
 
 
 def run_training() -> None:
@@ -311,6 +218,21 @@ def persist_execution(
         raise
 
 
+def prune_superseded_models(db: SupabaseRestClient, keep_model_id: int) -> None:
+    """Bound Supabase storage: keep evaluation rows and artifact only for the current model."""
+    try:
+        result = db.prune_model_history(keep_model_id)
+    except RuntimeError as exc:
+        if "404" in str(exc):
+            print("[WARNING] prune_model_history no existe aún; aplica la migración de retención")
+            return
+        raise
+    print(
+        f"[INFO] Historial podado: métricas={result.get('metrics_deleted', 0)} "
+        f"predicciones={result.get('predictions_deleted', 0)} modelos_retirados={result.get('models_retired', 0)}"
+    )
+
+
 def _safe_payload_path(submission_key: str) -> Path:
     digest = hashlib.sha256(submission_key.encode()).hexdigest()[:24]
     return OUTBOX_DIR / f"submission-{digest}.json"
@@ -400,7 +322,12 @@ def restore_active_artifacts(db: SupabaseRestClient) -> None:
     (ARTIFACT_DIR / "metrics.json").write_text(json.dumps(metrics, indent=2))
 
 
-def publish(env: dict[str, str], *, persist_evaluation: bool = True) -> dict[str, Any]:
+def publish(
+    env: dict[str, str],
+    *,
+    persist_evaluation: bool = True,
+    db: SupabaseRestClient | None = None,
+) -> dict[str, Any]:
     supabase_url = env.get("SUPABASE_URL")
     supabase_key = env.get("SUPABASE_SERVICE_ROLE_KEY") or env.get("SUPABASE_KEY")
     api_key = env.get("PULSO_API_KEY")
@@ -430,7 +357,7 @@ def publish(env: dict[str, str], *, persist_evaluation: bool = True) -> dict[str
     version = f"{algorithm_name}-{artifact_sha256[:12]}"
     mlflow_metadata = load_metadata(ARTIFACT_DIR)
     now = utc_now()
-    db = SupabaseRestClient(supabase_url, supabase_key)
+    db = db or SupabaseRestClient(supabase_url, supabase_key)
     data_cut_id = db.latest_data_cut_id()
     existing_model = db.find_model(version)
     if existing_model:
@@ -512,6 +439,8 @@ def publish(env: dict[str, str], *, persist_evaluation: bool = True) -> dict[str
         ]
         for start in range(0, len(metric_payload), 500):
             db.insert_many("monitoring_metric", metric_payload[start : start + 500])
+    if not existing_model:
+        prune_superseded_models(db, model_id)
     print(f"[INFO] Metrics validated: MAE={metric_values['mae']:.2f} RMSE={metric_values['rmse']:.2f} WAPE={metric_values['wape']:.4f}")
 
     with PulsoTransmiClient(base_url=api_url, api_key=api_key) as api:
@@ -627,20 +556,20 @@ def main() -> None:
     args = parser.parse_args()
     env = load_env()
     print("[INFO] Pipeline iniciado")
+    supabase_url = env.get("SUPABASE_URL")
+    supabase_key = env.get("SUPABASE_SERVICE_ROLE_KEY") or env.get("SUPABASE_KEY")
+    if not supabase_url or not supabase_key:
+        raise RuntimeError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required")
     try:
-        if args.publish_only:
-            supabase_url = env.get("SUPABASE_URL")
-            supabase_key = env.get("SUPABASE_SERVICE_ROLE_KEY") or env.get("SUPABASE_KEY")
-            if not supabase_url or not supabase_key:
-                raise RuntimeError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required")
-            db = SupabaseRestClient(supabase_url, supabase_key)
-            restore_active_artifacts(db)
-            print("[INFO] Active model artifact restored from Supabase")
-            result = publish(env, persist_evaluation=False)
-        else:
-            run_training()
-            print("[INFO] Training and inference artifacts generated")
-            result = publish(env)
+        with SupabaseRestClient(supabase_url, supabase_key) as db:
+            if args.publish_only:
+                restore_active_artifacts(db)
+                print("[INFO] Active model artifact restored from Supabase")
+                result = publish(env, persist_evaluation=False, db=db)
+            else:
+                run_training()
+                print("[INFO] Training and inference artifacts generated")
+                result = publish(env, db=db)
         print(json.dumps(result, indent=2, default=str))
         write_pipeline_status("SUCCESS", "Ingesta, inferencia, métricas y publicación confirmadas.")
         print("[INFO] PIPELINE SUCCESS")

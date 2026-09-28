@@ -12,7 +12,9 @@ on:
         type: boolean
 
 concurrency:
-  group: pulso-transmi-model-drift
+  # All workflows write to the same Supabase project. A shared queue avoids
+  # concurrent ingestion/training jobs exhausting the database connection budget.
+  group: pulso-transmi-supabase-writer
   cancel-in-progress: false
 
 jobs:

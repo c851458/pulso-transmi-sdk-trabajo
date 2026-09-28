@@ -26,14 +26,29 @@ eso podia crear carreras entre ejecuciones.
   el numero esperado de predicciones y el ciclo correcto.
 - El pipeline solo escribe `SUCCESS` despues de confirmar API; de lo contrario
   escribe `FAILED` y devuelve codigo distinto de cero.
-- `concurrency` evita ejecuciones simultáneas dentro de cada workflow. Cada
-  proceso conserva su propio grupo para que ejecuciones manuales del pipeline
-  no bloqueen indefinidamente el schedule automático del drift.
+- `concurrency` usa un grupo compartido para ingestión, drift, entrenamiento y
+  publicación, evitando que varios workflows escriban en Supabase al mismo
+  tiempo.
+- Las tareas reutilizan un cliente REST por ejecución, con un pool HTTP pequeño
+  (máximo cuatro conexiones y keep-alive). Solo las lecturas `GET` tienen
+  reintentos acotados; las escrituras no se repiten automáticamente.
 - `model_drift.yml` conserva su schedule de `*/10 * * * *` y
-  `workflow_dispatch`; `pipeline.yml` y `data_pipeline.yml` son manuales.
+  `workflow_dispatch`; `pipeline.yml` ejecuta ingesta, entrenamiento y publicación
+  cada diez minutos (`*/10 * * * *`) y también conserva `workflow_dispatch`.
+- `data_pipeline.yml` permanece manual porque la ingesta ya forma parte del pipeline
+  automático y un segundo schedule produciría ejecuciones duplicadas.
 - `supabase/migrations/20260927180000_monitoring_query_indexes.sql` añade
   índices no destructivos para las consultas frecuentes de monitoreo. Debe
   aplicarse desde Supabase cuando la Data API vuelva a estar disponible.
+- `supabase/migrations/20260927190000_cpu_query_indexes.sql` añade índices
+  compuestos para las consultas incrementales de ingestión y drift.
+- `supabase/migrations/20260927200000_model_history_retention.sql` crea
+  `prune_model_history`. Cada vez que se registra un modelo nuevo, el pipeline
+  borra las predicciones de evaluación y `monitoring_metric` de los modelos
+  anteriores, los marca `retired` y elimina su `artifact_base64` (el artefacto
+  sigue en MLflow). Las predicciones enviadas a la API, las observaciones y las
+  ejecuciones se conservan. Sin esta retención, el reentrenamiento periódico llenó
+  el disco de 2 GB del plan free y Postgres dejó de responder (HTTP 503 PGRST002).
 - `pipeline_sync_status` expone al portal el estado de sincronización y
   `last_updated_at`; el frontend puede marcar datos como stale según su propia
   ventana de frescura sin ejecutar la ingesta.

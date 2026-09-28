@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: pulso-transmi-data-ingestion
+  group: pulso-transmi-supabase-writer
   cancel-in-progress: false
 
 jobs:

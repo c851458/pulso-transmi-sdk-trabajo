@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import json
 import os
+import json
 import time
 from pathlib import Path
-from urllib.parse import urlencode
-from urllib.request import Request
 
 import numpy as np
 import pandas as pd
@@ -20,7 +18,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, RobustScaler
 
 from src.mlflow_tracking import log_training_run
-from src.supabase_resilience import open_supabase
+from src.supabase_resilience import SupabaseRestClient
 
 
 TABLE_PAGE_SIZE = 1000
@@ -40,40 +38,6 @@ def load_env(path: Path = Path(".env")) -> dict[str, str]:
             values[key.strip()] = value.strip().strip('"').strip("'")
     values.update({key: value for key, value in os.environ.items() if key.startswith("SUPABASE_")})
     return values
-
-
-class SupabaseRestClient:
-    def __init__(self, url: str, key: str) -> None:
-        self.base_url = url.rstrip("/") + "/rest/v1"
-        self.headers = {
-            "apikey": key,
-            "Authorization": f"Bearer {key}",
-            "Accept": "application/json",
-        }
-
-    def get_page(self, table: str, select: str, offset: int) -> list[dict[str, object]]:
-        query = urlencode(
-            {"select": select, "limit": TABLE_PAGE_SIZE, "offset": offset}
-        )
-        request = Request(
-            f"{self.base_url}/{table}?{query}", headers=self.headers
-        )
-        with open_supabase(request) as response:
-            payload = json.loads(response.read())
-        if not isinstance(payload, list):
-            raise RuntimeError(f"Supabase returned a non-list payload for {table}")
-        return payload
-
-    def get_all(self, table: str, select: str) -> pd.DataFrame:
-        rows: list[dict[str, object]] = []
-        for offset in range(0, 100_000, TABLE_PAGE_SIZE):
-            page = self.get_page(table, select, offset)
-            rows.extend(page)
-            if len(page) < TABLE_PAGE_SIZE:
-                break
-        else:
-            raise RuntimeError(f"Pagination limit reached for {table}")
-        return pd.DataFrame(rows)
 
 
 def fetch_dataset(client: SupabaseRestClient) -> pd.DataFrame:
@@ -233,7 +197,8 @@ def main() -> None:
     if not url or not key:
         raise RuntimeError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required")
 
-    dataset = add_features(fetch_dataset(SupabaseRestClient(url, key)))
+    with SupabaseRestClient(url, key) as client:
+        dataset = add_features(fetch_dataset(client))
     split_at = int(len(dataset) * TRAIN_FRACTION)
     train = dataset.iloc[:split_at].copy()
     test = dataset.iloc[split_at:].copy()

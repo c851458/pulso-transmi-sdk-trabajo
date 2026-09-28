@@ -8,14 +8,12 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode
-from urllib.request import Request
 
 import numpy as np
 import pandas as pd
 
 from src.ingest import load_env
-from src.supabase_resilience import open_supabase
+from src.supabase_resilience import SupabaseRestClient
 
 
 LOG = logging.getLogger("pulso.drift")
@@ -29,41 +27,6 @@ RETRAIN_COOLDOWN_HOURS = int(os.getenv("RETRAIN_COOLDOWN_HOURS", "24"))
 EPSILON = 1e-6
 
 
-class SupabaseRestClient:
-    def __init__(self, url: str, key: str) -> None:
-        self.base_url = url.rstrip("/") + "/rest/v1"
-        self.headers = {
-            "apikey": key,
-            "Authorization": f"Bearer {key}",
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-            "Prefer": "return=representation",
-        }
-
-    def request(self, method: str, table: str, payload: Any = None, *, params: dict[str, str] | None = None) -> list[dict[str, Any]]:
-        query = f"?{urlencode(params)}" if params else ""
-        request = Request(
-            f"{self.base_url}/{table}{query}",
-            data=None if payload is None else json.dumps(payload, default=str).encode(),
-            headers=self.headers,
-            method=method,
-        )
-        with open_supabase(request, timeout=30) as response:
-            result = json.loads(response.read())
-        if not isinstance(result, list):
-            raise RuntimeError(f"Unexpected Supabase response for {table}")
-        return result
-
-    def rows(self, table: str, **params: str) -> list[dict[str, Any]]:
-        return self.request("GET", table, params=params)
-
-    def insert(self, table: str, payload: dict[str, Any]) -> dict[str, Any]:
-        rows = self.request("POST", table, payload)
-        if not rows:
-            raise RuntimeError(f"Supabase did not return the inserted {table}")
-        return rows[0]
-
-
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -71,18 +34,27 @@ def utc_now() -> datetime:
 def paged_since(db: SupabaseRestClient, table: str, select: str, start: pd.Timestamp) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
     page_size = 1_000
-    for offset in range(0, 100_000, page_size):
+    last_observed_at: str | None = None
+    last_id: int | None = None
+    for _ in range(100):
+        page_select = f"id,{select}" if not select.startswith("id,") else select
+        params: dict[str, str] = {
+            "select": page_select,
+            "observed_at": f"gte.{start.isoformat()}" if last_observed_at is None else f"gte.{last_observed_at}",
+            "order": "observed_at.asc,id.asc",
+            "limit": str(page_size),
+        }
+        if last_observed_at is not None and last_id is not None:
+            params["or"] = f"(observed_at.gt.{last_observed_at},and(observed_at.eq.{last_observed_at},id.gt.{last_id}))"
         page = db.rows(
             table,
-            select=select,
-            observed_at=f"gte.{start.isoformat()}",
-            order="observed_at.asc",
-            limit=str(page_size),
-            offset=str(offset),
+            **params,
         )
         rows.extend(page)
         if len(page) < page_size:
             break
+        last_observed_at = str(page[-1]["observed_at"])
+        last_id = int(page[-1]["id"])
     else:
         raise RuntimeError(f"Drift query pagination limit reached for {table}")
     frame = pd.DataFrame(rows)
@@ -138,8 +110,9 @@ def baseline_wape(metrics: dict[str, Any]) -> float:
     return value if math.isfinite(value) and value >= 0 else 0.0
 
 
-def evaluate(env: dict[str, str]) -> dict[str, Any]:
-    db = SupabaseRestClient(env["SUPABASE_URL"], env["SUPABASE_SERVICE_ROLE_KEY"])
+def evaluate(env: dict[str, str], db: SupabaseRestClient | None = None) -> dict[str, Any]:
+    owns_db = db is None
+    db = db or SupabaseRestClient(env["SUPABASE_URL"], env["SUPABASE_SERVICE_ROLE_KEY"])
     latest_rows = db.rows("demand_observation", select="observed_at", order="observed_at.desc", limit="1")
     if not latest_rows:
         raise RuntimeError("No demand observations available for drift evaluation")
@@ -228,6 +201,8 @@ def evaluate(env: dict[str, str]) -> dict[str, Any]:
         "reason": reason,
     }
     db.insert("model_drift_check", report)
+    if owns_db:
+        db.close()
     return report
 
 
@@ -299,32 +274,32 @@ def main() -> None:
         raise RuntimeError(f"Missing required variables: {', '.join(missing)}")
     execution_id = str(uuid.uuid4())
     started_at = utc_now()
-    history_db = SupabaseRestClient(env["SUPABASE_URL"], env["SUPABASE_SERVICE_ROLE_KEY"])
-    try:
-        report = evaluate(env)
-        completed_at = utc_now()
-        history_db.insert(
-            "model_drift_execution",
-            execution_success_payload(execution_id, started_at, completed_at, report),
-        )
-        LOG.info("Ejecución de drift registrada: execution_id=%s status=success", execution_id)
-        LOG.info("Ventanas: referencia=%d actual=%d", report["reference_window"]["rows"], report["current_window"]["rows"])
-        LOG.info("PSI por variable: %s", json.dumps(report["feature_psi"], sort_keys=True))
-        LOG.info("Drift alert=%s retrain=%s reason=%s", report["drift_alert"], report["retrain"], report["reason"])
-        write_output(report)
-        LOG.info("Evaluación de drift finalizada")
-    except Exception as error:
-        completed_at = utc_now()
+    with SupabaseRestClient(env["SUPABASE_URL"], env["SUPABASE_SERVICE_ROLE_KEY"]) as history_db:
         try:
+            report = evaluate(env, history_db)
+            completed_at = utc_now()
             history_db.insert(
                 "model_drift_execution",
-                execution_error_payload(execution_id, started_at, completed_at, error),
+                execution_success_payload(execution_id, started_at, completed_at, report),
             )
-            LOG.info("Ejecución de drift registrada: execution_id=%s status=error", execution_id)
-        except Exception:
-            LOG.exception("No fue posible registrar el error de drift: execution_id=%s", execution_id)
-        LOG.error("Error evaluando drift; la próxima ejecución podrá reintentarlo: %s", error)
-        raise
+            LOG.info("Ejecución de drift registrada: execution_id=%s status=success", execution_id)
+            LOG.info("Ventanas: referencia=%d actual=%d", report["reference_window"]["rows"], report["current_window"]["rows"])
+            LOG.info("PSI por variable: %s", json.dumps(report["feature_psi"], sort_keys=True))
+            LOG.info("Drift alert=%s retrain=%s reason=%s", report["drift_alert"], report["retrain"], report["reason"])
+            write_output(report)
+            LOG.info("Evaluación de drift finalizada")
+        except Exception as error:
+            completed_at = utc_now()
+            try:
+                history_db.insert(
+                    "model_drift_execution",
+                    execution_error_payload(execution_id, started_at, completed_at, error),
+                )
+                LOG.info("Ejecución de drift registrada: execution_id=%s status=error", execution_id)
+            except Exception:
+                LOG.exception("No fue posible registrar el error de drift: execution_id=%s", execution_id)
+            LOG.error("Error evaluando drift; la próxima ejecución podrá reintentarlo: %s", error)
+            raise
 
 
 if __name__ == "__main__":

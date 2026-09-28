@@ -1,19 +1,15 @@
 from __future__ import annotations
 
-import json
 import logging
 import os
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode
-from urllib.error import HTTPError
-from urllib.request import Request
 
 import pandas as pd
 
 from pulso_transmi import PulsoTransmiClient
-from src.supabase_resilience import open_supabase
+from src.supabase_resilience import SupabaseRestClient
 
 
 LOG = logging.getLogger("pulso.ingest")
@@ -34,61 +30,6 @@ def load_env(path: Path = Path(".env")) -> dict[str, str]:
         if key.startswith(("SUPABASE_", "PULSO_")):
             values[key] = value
     return values
-
-
-class SupabaseRestClient:
-    def __init__(self, url: str, key: str) -> None:
-        self.base_url = url.rstrip("/") + "/rest/v1"
-        self.headers = {
-            "apikey": key,
-            "Authorization": f"Bearer {key}",
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-            "Prefer": "return=representation",
-        }
-
-    def request(
-        self,
-        method: str,
-        table: str,
-        payload: Any = None,
-        params: dict[str, str] | None = None,
-        headers: dict[str, str] | None = None,
-    ) -> list[dict[str, Any]]:
-        query = f"?{urlencode(params)}" if params else ""
-        request = Request(
-            f"{self.base_url}/{table}{query}",
-            data=None if payload is None else json.dumps(payload, default=str).encode(),
-            headers={**self.headers, **(headers or {})},
-            method=method,
-        )
-        with open_supabase(request, timeout=30) as response:
-            result = json.loads(response.read())
-        if not isinstance(result, list):
-            raise RuntimeError(f"Unexpected Supabase response for {table}")
-        return result
-
-    def rows(self, table: str, **params: str) -> list[dict[str, Any]]:
-        return self.request("GET", table, params=params)
-
-    def insert_many(self, table: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        if not rows:
-            return []
-        return self.request("POST", table, rows)
-
-    def upsert_many(self, table: str, rows: list[dict[str, Any]], conflict_column: str) -> list[dict[str, Any]]:
-        if not rows:
-            return []
-        return self.request(
-            "POST",
-            table,
-            rows,
-            params={"on_conflict": conflict_column},
-            headers={"Prefer": "return=representation,resolution=merge-duplicates"},
-        )
-
-    def update(self, table: str, filters: dict[str, str], payload: dict[str, Any]) -> list[dict[str, Any]]:
-        return self.request("PATCH", table, payload, params=filters)
 
 
 def chunks(rows: list[dict[str, Any]], size: int = BATCH_SIZE):
@@ -127,7 +68,7 @@ def update_sync_status(
             "error": error,
             "updated_at": now,
         }], "id")
-    except (RuntimeError, HTTPError) as exc:
+    except RuntimeError as exc:
         if "404" in str(exc):
             _SYNC_STATUS_AVAILABLE = False
             LOG.warning("pipeline_sync_status no existe aún; se continúa sin heartbeat hasta aplicar la migración")
@@ -187,10 +128,16 @@ def sync_observations(db: SupabaseRestClient, table: str, data_cut_id: int, fram
     if frame.empty:
         return 0, 0, 0
     start = frame["observed_at"].min().isoformat()
-    existing = db.rows(table, select=",".join(columns), observed_at=f"gte.{start}", limit="10000")
+    existing = db.rows(
+        table,
+        select=",".join(columns),
+        data_cut_id=f"eq.{data_cut_id}",
+        observed_at=f"gte.{start}",
+        limit="10000",
+    )
     existing_by_key = {(str(row["station_id"]), str(row["observed_at"])): row for row in existing if "station_id" in row}
     inserts: list[dict[str, Any]] = []
-    updates: list[tuple[dict[str, str], dict[str, Any]]] = []
+    updates: list[dict[str, Any]] = []
     ignored = 0
     for row in frame.to_dict("records"):
         station_id = str(row["station_id"]).zfill(5)
@@ -200,13 +147,13 @@ def sync_observations(db: SupabaseRestClient, table: str, data_cut_id: int, fram
         if key not in existing_by_key:
             inserts.append({"data_cut_id": data_cut_id, "station_id": station_id, "observed_at": observed_at, **values})
         elif any(str(existing_by_key[key].get(column)) != str(value) for column, value in values.items()):
-            updates.append(({"station_id": f"eq.{station_id}", "observed_at": f"eq.{observed_at}"}, values))
+            updates.append({"data_cut_id": data_cut_id, "station_id": station_id, "observed_at": observed_at, **values})
         else:
             ignored += 1
     for batch in chunks(inserts):
         db.insert_many(table, batch)
-    for filters, values in updates:
-        db.update(table, filters, values)
+    for batch in chunks(updates):
+        db.upsert_many(table, batch, "data_cut_id,station_id,observed_at")
     LOG.info("%s: %d nuevos, %d actualizados, %d duplicados ignorados", table, len(inserts), len(updates), ignored)
     return len(inserts), len(updates), ignored
 
@@ -218,13 +165,14 @@ def sync_context(db: SupabaseRestClient, data_cut_id: int, frame: pd.DataFrame) 
     existing = db.rows(
         "context_observation",
         select="observed_at,event_intensity,rain_forecast,rain_mm,temperature_c,temperature_forecast",
+        data_cut_id=f"eq.{data_cut_id}",
         observed_at=f"gte.{start}",
         limit="10000",
     )
     existing_by_key = {str(row["observed_at"]): row for row in existing}
     value_columns = ["event_intensity", "rain_forecast", "rain_mm", "temperature_c", "temperature_forecast"]
     inserts: list[dict[str, Any]] = []
-    updates: list[tuple[dict[str, str], dict[str, Any]]] = []
+    updates: list[dict[str, Any]] = []
     ignored = 0
     for row in frame.to_dict("records"):
         observed_at = pd.Timestamp(row["observed_at"]).isoformat()
@@ -232,13 +180,13 @@ def sync_context(db: SupabaseRestClient, data_cut_id: int, frame: pd.DataFrame) 
         if observed_at not in existing_by_key:
             inserts.append({"data_cut_id": data_cut_id, "observed_at": observed_at, **values})
         elif any(str(existing_by_key[observed_at].get(column)) != str(value) for column, value in values.items()):
-            updates.append(({"observed_at": f"eq.{observed_at}"}, values))
+            updates.append({"data_cut_id": data_cut_id, "observed_at": observed_at, **values})
         else:
             ignored += 1
     for batch in chunks(inserts):
         db.insert_many("context_observation", batch)
-    for filters, values in updates:
-        db.update("context_observation", filters, values)
+    for batch in chunks(updates):
+        db.upsert_many("context_observation", batch, "data_cut_id,observed_at")
     LOG.info("context_observation: %d nuevos, %d actualizados, %d duplicados ignorados", len(inserts), len(updates), ignored)
     return len(inserts), len(updates), ignored
 
@@ -251,52 +199,52 @@ def main() -> None:
     missing = [key for key in required if not env.get(key)]
     if missing:
         raise RuntimeError(f"Faltan variables requeridas: {', '.join(missing)}")
-    db = SupabaseRestClient(env["SUPABASE_URL"], env["SUPABASE_SERVICE_ROLE_KEY"])
-    started_at = pd.Timestamp.utcnow().isoformat()
-    try:
-        update_sync_status(db, status="SYNCING", started_at=started_at)
-        with PulsoTransmiClient(base_url=env["PULSO_API_URL"], api_key=env["PULSO_API_KEY"]) as api:
-            LOG.info("Conexión configurada con la API de Pulso TransMi")
-            last_demand = latest_timestamp(db, "demand_observation")
-            last_context = latest_timestamp(db, "context_observation")
-            start_values = [value for value in (last_demand, last_context) if value is not None]
-            start = min(start_values) - OVERLAP if start_values else None
-            start_text = start.isoformat() if start is not None else None
-            LOG.info("Extrayendo API desde %s", start_text or "el inicio disponible")
-            stations = api.stations()
-            observations = api.observations_dataframe(start=start_text)
-            context = api.context_dataframe(start=start_text)
-            received = len(stations) + len(observations) + len(context)
-            LOG.info("Registros obtenidos: estaciones=%d demanda=%d contexto=%d", len(stations), len(observations), len(context))
-            cut_id = ensure_data_cut(db, api, env)
-            station_count = sync_stations(db, stations)
-            demand_counts = sync_observations(db, "demand_observation", cut_id, observations, ["station_id", "observed_at", "demand"])
-            context_counts = sync_context(db, cut_id, context)
-            inserted = station_count + demand_counts[0] + context_counts[0]
-            updated = demand_counts[1] + context_counts[1]
-            unchanged = demand_counts[2] + context_counts[2]
-            LOG.info("Estaciones procesadas: %d", station_count)
-            LOG.info(
-                "Resultado Supabase: demanda nuevos=%d actualizados=%d ignorados=%d; contexto nuevos=%d actualizados=%d ignorados=%d",
-                *demand_counts,
-                *context_counts,
-            )
-            update_sync_status(
-                db,
-                status="SUCCESS",
-                started_at=started_at,
-                records_received=received,
-                records_inserted=inserted,
-                records_updated=updated,
-                records_unchanged=unchanged,
-            )
-        LOG.info("Sincronización completada; última actualización: %s", pd.Timestamp.utcnow().isoformat())
-    except Exception as exc:
+    with SupabaseRestClient(env["SUPABASE_URL"], env["SUPABASE_SERVICE_ROLE_KEY"]) as db:
+        started_at = pd.Timestamp.utcnow().isoformat()
         try:
-            update_sync_status(db, status="FAILED", started_at=started_at, error=f"{type(exc).__name__}: {exc}")
-        except Exception:
-            LOG.exception("No fue posible registrar el estado FAILED de la sincronización")
-        raise
+            update_sync_status(db, status="SYNCING", started_at=started_at)
+            with PulsoTransmiClient(base_url=env["PULSO_API_URL"], api_key=env["PULSO_API_KEY"]) as api:
+                LOG.info("Conexión configurada con la API de Pulso TransMi")
+                last_demand = latest_timestamp(db, "demand_observation")
+                last_context = latest_timestamp(db, "context_observation")
+                start_values = [value for value in (last_demand, last_context) if value is not None]
+                start = min(start_values) - OVERLAP if start_values else None
+                start_text = start.isoformat() if start is not None else None
+                LOG.info("Extrayendo API desde %s", start_text or "el inicio disponible")
+                stations = api.stations()
+                observations = api.observations_dataframe(start=start_text)
+                context = api.context_dataframe(start=start_text)
+                received = len(stations) + len(observations) + len(context)
+                LOG.info("Registros obtenidos: estaciones=%d demanda=%d contexto=%d", len(stations), len(observations), len(context))
+                cut_id = ensure_data_cut(db, api, env)
+                station_count = sync_stations(db, stations)
+                demand_counts = sync_observations(db, "demand_observation", cut_id, observations, ["station_id", "observed_at", "demand"])
+                context_counts = sync_context(db, cut_id, context)
+                inserted = station_count + demand_counts[0] + context_counts[0]
+                updated = demand_counts[1] + context_counts[1]
+                unchanged = demand_counts[2] + context_counts[2]
+                LOG.info("Estaciones procesadas: %d", station_count)
+                LOG.info(
+                    "Resultado Supabase: demanda nuevos=%d actualizados=%d ignorados=%d; contexto nuevos=%d actualizados=%d ignorados=%d",
+                    *demand_counts,
+                    *context_counts,
+                )
+                update_sync_status(
+                    db,
+                    status="SUCCESS",
+                    started_at=started_at,
+                    records_received=received,
+                    records_inserted=inserted,
+                    records_updated=updated,
+                    records_unchanged=unchanged,
+                )
+            LOG.info("Sincronización completada; última actualización: %s", pd.Timestamp.utcnow().isoformat())
+        except Exception as exc:
+            try:
+                update_sync_status(db, status="FAILED", started_at=started_at, error=f"{type(exc).__name__}: {exc}")
+            except Exception:
+                LOG.exception("No fue posible registrar el estado FAILED de la sincronización")
+            raise
 
 
 if __name__ == "__main__":
