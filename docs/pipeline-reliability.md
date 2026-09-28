@@ -34,7 +34,8 @@ eso podia crear carreras entre ejecuciones.
   reintentos acotados; las escrituras no se repiten automáticamente.
 - `model_drift.yml` conserva su schedule de `*/10 * * * *` y
   `workflow_dispatch`; `pipeline.yml` ejecuta ingesta, entrenamiento y publicación
-  cada diez minutos (`*/10 * * * *`) y también conserva `workflow_dispatch`.
+  cada diez minutos mediante `workflow_dispatch` disparado desde cron-job.org; no
+  tiene `schedule` propio para no duplicar ejecuciones.
 - `data_pipeline.yml` permanece manual porque la ingesta ya forma parte del pipeline
   automático y un segundo schedule produciría ejecuciones duplicadas.
 - `supabase/migrations/20260927180000_monitoring_query_indexes.sql` añade

@@ -1,9 +1,8 @@
 name: pulso-transmi-pipeline
 
 on:
-  schedule:
-    # GitHub Actions interpreta este horario en UTC.
-    - cron: "*/10 * * * *"
+  # cron-job.org dispara este workflow cada 10 minutos vía workflow_dispatch.
+  # No se agrega schedule aquí para evitar ejecuciones duplicadas.
   workflow_dispatch:
 
 concurrency:
