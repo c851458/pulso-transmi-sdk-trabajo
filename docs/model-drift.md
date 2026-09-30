@@ -17,6 +17,15 @@ de la API o de Supabase, el job intenta publicar hasta tres veces, con esperas
 de 60 y 120 segundos. Si todos fallan, la siguiente ejecución programada de
 10 minutos vuelve a intentarlo. No existe un retry infinito.
 
+## Reentrenamiento programado
+
+Además del reentrenamiento por drift, [pipeline.yml](../.github/workflows/pipeline.yml)
+reentrena en un loop de una hora: en cada ejecución (cada 10 minutos, vía
+cron-job.org) solo reentrena si el modelo activo tiene al menos
+`RETRAIN_INTERVAL_HOURS` (por defecto `1`); si no, publica con el modelo activo.
+Ambos caminos actualizan el mismo modelo activo. Detalle en
+[work-log-2026-09-30.md](work-log-2026-09-30.md).
+
 ## Umbrales por defecto
 
 | Variable | Valor | Acción |
