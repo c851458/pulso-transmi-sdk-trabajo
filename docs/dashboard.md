@@ -22,10 +22,10 @@ decisión.
 - **Métricas actuales**: WAPE, MAE, RMSE, R², accuracy y MAE de validación
   cruzada de la evaluación de prueba del modelo activo, con la variación
   frente al modelo anterior (▲ mejor / ▼ peor según la dirección de cada
-  métrica), más el WAPE y la accuracy en producción de la última evaluación
-  de drift. La accuracy en producción es `100 × (1 − WAPE en producción)`, en
-  la misma escala que la accuracy de prueba (`100 × (1 − WAPE de prueba)`), y
-  se muestra su diferencia en puntos frente a la de prueba.
+  métrica), más el WAPE en producción y la **accuracy reciente** de la última
+  evaluación de drift: la misma medida que decide el reentrenamiento, con el
+  umbral (`RETRAIN_ACCURACY_THRESHOLD`, 79 %) y su origen (pronósticos frente
+  a demanda observada, o evaluación en la ventana reciente).
 - **Drift y reentrenamientos** (rango 24 h / 72 h / 7 días):
   - *WAPE: prueba al reentrenar vs. producción*: WAPE de prueba de cada modelo
     (escalonado, cambia en cada reentrenamiento) y WAPE reciente medido por el

@@ -12,6 +12,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from src.accuracy import recent_accuracy
 from src.ingest import load_env
 from src.supabase_resilience import SupabaseRestClient
 
@@ -24,6 +25,7 @@ DRIFTED_FEATURES_REQUIRED = int(os.getenv("DRIFTED_FEATURES_REQUIRED", "2"))
 PERFORMANCE_RATIO_THRESHOLD = float(os.getenv("DRIFT_PERFORMANCE_RATIO", "1.25"))
 MIN_ROWS = int(os.getenv("DRIFT_MIN_ROWS", "96"))
 RETRAIN_COOLDOWN_HOURS = int(os.getenv("RETRAIN_COOLDOWN_HOURS", "24"))
+RETRAIN_ACCURACY_THRESHOLD = float(os.getenv("RETRAIN_ACCURACY_THRESHOLD", "79"))
 EPSILON = 1e-6
 
 
@@ -174,14 +176,22 @@ def evaluate(env: dict[str, str], db: SupabaseRestClient | None = None) -> dict[
                 "gate": "fail" if ratio >= PERFORMANCE_RATIO_THRESHOLD else "pass",
             }
 
+    measured = recent_accuracy(db, model_id) if model_id is not None else {"accuracy": None, "source": "unavailable", "rows": 0}
+    accuracy = measured["accuracy"]
+    performance["accuracy"] = accuracy
+    performance["accuracy_source"] = measured["source"]
+    accuracy_alert = accuracy is not None and accuracy < RETRAIN_ACCURACY_THRESHOLD
+
     drifted_count = len(feature_alerts)
+    # PSI and the WAPE ratio still raise drift alerts, but only low accuracy triggers retraining.
     drift_alert = drifted_count >= DRIFTED_FEATURES_REQUIRED or performance["alert"]
     cooldown = False
     if model:
         trained_at = pd.Timestamp(model["trained_at"])
         cooldown = trained_at >= (utc_now() - timedelta(hours=RETRAIN_COOLDOWN_HOURS))
-    retrain = drift_alert and not cooldown
+    retrain = accuracy_alert and not cooldown
     reason = "; ".join([
+        f"accuracy={'n/a' if accuracy is None else f'{accuracy:.2f}%'} (threshold {RETRAIN_ACCURACY_THRESHOLD:g}%, source={measured['source']})",
         f"features={','.join(feature_alerts) or 'none'}",
         f"performance_alert={performance['alert']}",
         f"cooldown={cooldown}",
@@ -192,7 +202,7 @@ def evaluate(env: dict[str, str], db: SupabaseRestClient | None = None) -> dict[
         "model_version": model.get("version") if model else None,
         "reference_window": {"start": reference_start.isoformat(), "end": reference_end.isoformat(), "rows": len(reference_demand)},
         "current_window": {"start": current_start.isoformat(), "end": latest.isoformat(), "rows": len(current_demand)},
-        "thresholds": {"psi": PSI_THRESHOLD, "drifted_features_required": DRIFTED_FEATURES_REQUIRED, "performance_ratio": PERFORMANCE_RATIO_THRESHOLD, "cooldown_hours": RETRAIN_COOLDOWN_HOURS},
+        "thresholds": {"psi": PSI_THRESHOLD, "drifted_features_required": DRIFTED_FEATURES_REQUIRED, "performance_ratio": PERFORMANCE_RATIO_THRESHOLD, "cooldown_hours": RETRAIN_COOLDOWN_HOURS, "accuracy": RETRAIN_ACCURACY_THRESHOLD},
         "feature_psi": feature_scores,
         "drifted_features": feature_alerts,
         "performance": performance,

@@ -38,12 +38,14 @@ eso podia crear carreras entre ejecuciones.
   retirar entonces su `schedule`. `pipeline.yml` ejecuta ingesta y publicación
   cada diez minutos mediante `workflow_dispatch` disparado desde cron-job.org; no
   tiene `schedule` propio para no duplicar ejecuciones.
-- El reentrenamiento corre en loop cada hora: en cada ejecución `src.pipeline`
-  consulta el `trained_at` del modelo activo y solo reentrena si tiene al menos
-  `RETRAIN_INTERVAL_HOURS` (variable del repositorio, `1` por defecto) o si no
-  hay artefacto activo. En las demás ejecuciones restaura el modelo activo desde
-  Supabase y publica con él. El input `force_retrain` de `workflow_dispatch`
-  (o `python -m src.pipeline --force-retrain`) fuerza un reentrenamiento.
+- El reentrenamiento depende de la accuracy: en cada ejecución `src.pipeline`
+  mide la accuracy reciente del modelo activo (`src/accuracy.py`) y solo
+  reentrena si baja de `RETRAIN_ACCURACY_THRESHOLD` (`79` por defecto), si han
+  pasado al menos `RETRAIN_INTERVAL_HOURS` (`1`) desde el último entrenamiento,
+  o si no hay artefacto activo. En las demás ejecuciones restaura el modelo
+  activo desde Supabase y publica con él. El input `force_retrain` de
+  `workflow_dispatch` (o `python -m src.pipeline --force-retrain`) fuerza un
+  reentrenamiento. Detalle en `docs/work-log-2026-09-30.md`.
 - `data_pipeline.yml` permanece manual porque la ingesta ya forma parte del pipeline
   automático y un segundo schedule produciría ejecuciones duplicadas.
 - `supabase/migrations/20260927180000_monitoring_query_indexes.sql` añade

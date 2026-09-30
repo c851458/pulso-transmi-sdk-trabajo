@@ -18,6 +18,7 @@ import pandas as pd
 import numpy as np
 
 from pulso_transmi import PulsoTransmiClient
+from src.accuracy import recent_accuracy
 from src.mlflow_tracking import load_metadata
 from src.supabase_resilience import SupabaseRestClient
 
@@ -26,6 +27,8 @@ ARTIFACT_DIR = Path("artifacts/baseline")
 OUTBOX_DIR = Path("artifacts/outbox")
 TRAIN_SCRIPT = Path("examples/03_supabase_linear_baseline.py")
 REQUIRED_METRICS = ("mae", "rmse", "wape", "accuracy")
+RETRAIN_ACCURACY_THRESHOLD = float(os.getenv("RETRAIN_ACCURACY_THRESHOLD", "79"))
+# Minimum spacing between retrains, so a retrain that does not recover accuracy is not repeated every run.
 RETRAIN_INTERVAL_HOURS = float(os.getenv("RETRAIN_INTERVAL_HOURS", "1"))
 LOG = logging.getLogger("pulso.pipeline")
 
@@ -63,14 +66,30 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def retrain_due(active_model: dict[str, Any] | None, now: datetime, interval_hours: float = RETRAIN_INTERVAL_HOURS) -> bool:
-    """Retrain when there is no usable active model or it is older than the interval."""
-    if not active_model or not active_model.get("artifact_base64") or not active_model.get("trained_at"):
-        return True
+def usable_model(active_model: dict[str, Any] | None) -> bool:
+    return bool(active_model and active_model.get("artifact_base64") and active_model.get("trained_at"))
+
+
+def retrain_decision(
+    active_model: dict[str, Any] | None,
+    accuracy: float | None,
+    now: datetime,
+    threshold: float = RETRAIN_ACCURACY_THRESHOLD,
+    interval_hours: float = RETRAIN_INTERVAL_HOURS,
+) -> tuple[bool, str]:
+    """Retrain only when recent accuracy falls below the threshold (or no model exists)."""
+    if not usable_model(active_model):
+        return True, "no usable active model"
+    if accuracy is None:
+        return False, "recent accuracy unavailable; keeping the active model"
+    if accuracy >= threshold:
+        return False, f"accuracy {accuracy:.2f}% >= {threshold:g}%"
     trained_at = pd.Timestamp(active_model["trained_at"])
     if trained_at.tzinfo is None:
         trained_at = trained_at.tz_localize("UTC")
-    return now - trained_at.to_pydatetime() >= timedelta(hours=interval_hours)
+    if now - trained_at.to_pydatetime() < timedelta(hours=interval_hours):
+        return False, f"accuracy {accuracy:.2f}% < {threshold:g}% but the model is younger than {interval_hours:g}h"
+    return True, f"accuracy {accuracy:.2f}% < {threshold:g}%"
 
 
 def _validate_finite(value: Any, path: str) -> None:
@@ -579,9 +598,13 @@ def main() -> None:
         with SupabaseRestClient(supabase_url, supabase_key) as db:
             publish_only = args.publish_only
             if not publish_only and not args.force_retrain:
-                publish_only = not retrain_due(db.active_model(), utc_now())
-                if publish_only:
-                    print(f"[INFO] Active model is younger than {RETRAIN_INTERVAL_HOURS:g}h; skipping retraining")
+                active_model = db.active_model()
+                measured = recent_accuracy(db, int(active_model["id"])) if usable_model(active_model) else {"accuracy": None, "source": "unavailable", "rows": 0}
+                if measured["accuracy"] is not None:
+                    print(f"[INFO] Recent accuracy {measured['accuracy']:.2f}% (source={measured['source']}, rows={measured['rows']})")
+                retrain, reason = retrain_decision(active_model, measured["accuracy"], utc_now())
+                publish_only = not retrain
+                print(f"[INFO] {'Retraining' if retrain else 'Skipping retraining'}: {reason}")
             if publish_only:
                 restore_active_artifacts(db)
                 print("[INFO] Active model artifact restored from Supabase")

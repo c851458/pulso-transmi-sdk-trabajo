@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       force_retrain:
-        description: "Reentrenar aunque no se supere el umbral de drift"
+        description: "Reentrenar aunque la accuracy no esté por debajo del umbral"
         required: false
         default: false
         type: boolean
@@ -70,6 +70,7 @@ jobs:
           DRIFT_PERFORMANCE_RATIO: ${{ vars.DRIFT_PERFORMANCE_RATIO || '1.25' }}
           DRIFT_MIN_ROWS: ${{ vars.DRIFT_MIN_ROWS || '96' }}
           RETRAIN_COOLDOWN_HOURS: ${{ vars.RETRAIN_COOLDOWN_HOURS || '24' }}
+          RETRAIN_ACCURACY_THRESHOLD: ${{ vars.RETRAIN_ACCURACY_THRESHOLD || '79' }}
         run: python -u -m src.drift
       - name: Retrain and publish after drift
         if: steps.drift.outputs.retrain == 'true' || inputs.force_retrain == true
@@ -88,7 +89,8 @@ jobs:
           MLFLOW_EXPERIMENT_NAME: ${{ vars.MLFLOW_EXPERIMENT_NAME || 'pulso-transmi' }}
           MLFLOW_REGISTERED_MODEL_NAME: ${{ vars.MLFLOW_REGISTERED_MODEL_NAME || 'pulso-transmi-demand' }}
           MLFLOW_ENVIRONMENT: production
-        run: python -u -m src.pipeline
+        # The drift step already decided to retrain; skip the pipeline's own accuracy gate.
+        run: python -u -m src.pipeline --force-retrain
       - name: Publish current model predictions
         if: steps.drift.outputs.retrain != 'true' && inputs.force_retrain != true
         env:

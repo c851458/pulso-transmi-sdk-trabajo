@@ -3,12 +3,13 @@ name: pulso-transmi-pipeline
 on:
   # cron-job.org dispara este workflow cada 10 minutos vía workflow_dispatch.
   # No se agrega schedule aquí para evitar ejecuciones duplicadas.
-  # El modelo se reentrena como máximo una vez por RETRAIN_INTERVAL_HOURS (1 h por
-  # defecto); en las demás ejecuciones se publica con el modelo activo.
+  # El modelo solo se reentrena cuando su accuracy reciente baja de
+  # RETRAIN_ACCURACY_THRESHOLD (79 % por defecto), con al menos RETRAIN_INTERVAL_HOURS
+  # (1 h) entre reentrenamientos; en las demás ejecuciones se publica con el modelo activo.
   workflow_dispatch:
     inputs:
       force_retrain:
-        description: "Reentrenar aunque el modelo activo tenga menos de RETRAIN_INTERVAL_HOURS"
+        description: "Reentrenar aunque la accuracy no esté por debajo del umbral"
         required: false
         default: false
         type: boolean
@@ -70,7 +71,7 @@ jobs:
           GITHUB_SHA: ${{ github.sha }}
         run: python -u -m src.ingest
 
-      - name: Retrain (hourly) and publish predictions
+      - name: Retrain if accuracy is low and publish predictions
         env:
           PULSO_API_URL: ${{ secrets.PULSO_API_URL }}
           PULSO_API_KEY: ${{ secrets.PULSO_API_KEY }}
@@ -86,6 +87,7 @@ jobs:
           MLFLOW_EXPERIMENT_NAME: ${{ vars.MLFLOW_EXPERIMENT_NAME || 'pulso-transmi' }}
           MLFLOW_REGISTERED_MODEL_NAME: ${{ vars.MLFLOW_REGISTERED_MODEL_NAME || 'pulso-transmi-demand' }}
           MLFLOW_ENVIRONMENT: production
+          RETRAIN_ACCURACY_THRESHOLD: ${{ vars.RETRAIN_ACCURACY_THRESHOLD || '79' }}
           RETRAIN_INTERVAL_HOURS: ${{ vars.RETRAIN_INTERVAL_HOURS || '1' }}
         run: python -u -m src.pipeline ${{ inputs.force_retrain == true && '--force-retrain' || '' }}
 
