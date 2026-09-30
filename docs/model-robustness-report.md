@@ -139,6 +139,10 @@ artefacto.
 - Costo: unos 97 s de entrenamiento del candidato (2 min 45 s el script
   completo en local), dentro del límite de 30 min del workflow.
 
+En producción: activo desde 2026-09-30 21:01 UTC como modelo #286
+(`drift_robust_ensemble-303ab30ff133`), con MAE test 46,46 y accuracy
+87,29 % en el entrenamiento del workflow.
+
 `tests/test_robust_model.py` verifica los pesos por recencia, el recorte de
 predicciones extremas, que la ponderación por recencia se adapta mejor a un
 cambio de régimen simulado y que el modelo sobrevive al pickling.

@@ -54,3 +54,22 @@ def test_accuracy_from_forecasts_matched_with_observed_demand() -> None:
     value = wape(matched["actual"], matched["prediction"])
     assert value == 0.15
     assert accuracy_from_wape(value) == 85.0
+
+
+def test_detects_cycle_confirmed_with_other_content() -> None:
+    from src.pipeline import submitted_with_other_content
+
+    assert submitted_with_other_content({"status": "confirmed", "payload_sha256": "old"}, "new")
+    assert not submitted_with_other_content({"status": "confirmed", "payload_sha256": "same"}, "same")
+    assert not submitted_with_other_content({"status": "failed", "payload_sha256": "old"}, "new")
+    assert submitted_with_other_content({"status": "failed", "api_submission_id": "sub_1", "payload_sha256": "old"}, "new")
+    assert not submitted_with_other_content(None, "new")
+
+
+def test_only_idempotency_conflicts_count_as_already_submitted() -> None:
+    from pulso_transmi.client import PulsoTransmiError
+    from src.pipeline import is_idempotency_conflict
+
+    assert is_idempotency_conflict(PulsoTransmiError('HTTP 409: {"code": "idempotency_conflict"}', status_code=409))
+    assert not is_idempotency_conflict(PulsoTransmiError("HTTP 409: other conflict", status_code=409))
+    assert not is_idempotency_conflict(PulsoTransmiError("HTTP 500: idempotency_conflict", status_code=500))

@@ -66,6 +66,11 @@ eso podia crear carreras entre ejecuciones.
 - Todas las migraciones están aplicadas en el proyecto Supabase actual
   (`kfkrtngrpvbgdluvwcnc`). El detalle del incidente de disco lleno está en
   `docs/work-log-2026-09-27.md`.
+- Un ciclo se envía una sola vez (clave de idempotencia = `cycle_id`). Si el
+  ciclo ya fue aceptado con otro contenido (por ejemplo, tras reentrenar), el
+  pipeline no lo reenvía ni sobrescribe su registro y termina con
+  `PIPELINE CYCLE_ALREADY_SUBMITTED` en verde; el modelo nuevo envía desde el
+  siguiente ciclo. Un `409 idempotency_conflict` de la API se trata igual.
 - `pipeline_sync_status` expone al portal el estado de sincronización y
   `last_updated_at`; el frontend puede marcar datos como stale según su propia
   ventana de frescura sin ejecutar la ingesta.

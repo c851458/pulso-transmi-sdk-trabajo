@@ -58,6 +58,8 @@ drift unos 4 min, por eso el drift se programa en el minuto 5.
    - verde: se ejecutó y publicó;
    - rojo con `PIPELINE WAITING_FOR_OPEN_CYCLE` (código 2): se ejecutó, pero la
      API no tenía ciclo abierto; es esperado;
+   - verde con `PIPELINE CYCLE_ALREADY_SUBMITTED`: el ciclo ya estaba enviado
+     (por ejemplo, tras reentrenar); el modelo nuevo envía en el siguiente;
    - rojo con otro error: fallo real;
    - gris *Cancelled*: reemplazado en la cola de concurrencia;
    - sin ejecución: el disparo no llegó (ver History).

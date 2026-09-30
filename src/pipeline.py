@@ -37,6 +37,24 @@ class WaitingForOpenCycle(RuntimeError):
     """The API is healthy, but there is no cycle accepting submissions yet."""
 
 
+class CycleAlreadySubmitted(RuntimeError):
+    """The cycle already has an accepted submission; the API keeps only the first one."""
+
+
+def is_idempotency_conflict(exc: Exception) -> bool:
+    return getattr(exc, "status_code", None) == 409 and "idempotency_conflict" in str(exc)
+
+
+def submitted_with_other_content(existing: dict[str, Any] | None, payload_sha256: str) -> bool:
+    """True when the cycle was accepted earlier with a different payload (e.g. by a previous model).
+
+    ``api_submission_id`` also counts: older runs overwrote confirmed rows with ``failed``
+    after an idempotency conflict, but the API had accepted the first submission.
+    """
+    accepted = bool(existing and (existing.get("status") == "confirmed" or existing.get("api_submission_id")))
+    return accepted and existing.get("payload_sha256") != payload_sha256
+
+
 def load_env(path: Path = Path(".env")) -> dict[str, str]:
     values: dict[str, str] = {}
     if path.exists():
@@ -518,6 +536,16 @@ def publish(
         print(f"[INFO] Predicciones generadas/preparadas: {len(submission_predictions)}/{expected_submission_count}")
         print(f"[INFO] Métricas calculadas: {len(metric_values)} ({metric_names})")
         print("[INFO] Validación del payload: OK")
+        try:
+            existing = db.rows("pipeline_execution", select="status,payload_sha256,model_version,api_submission_id", run_id=f"eq.{client_run_id}", limit="1")
+        except RuntimeError as exc:
+            if "404" not in str(exc):
+                raise
+            existing = []
+        if submitted_with_other_content(existing[0] if existing else None, payload_sha256):
+            # Keep the confirmed record intact; a new model submits from the next cycle.
+            update_sync_status_state(db, "SUCCESS")
+            raise CycleAlreadySubmitted(f"cycle {cycle_id} already confirmed with model {existing[0].get('model_version')}; model {version} submits from the next cycle")
         persist_execution(
             db,
             run_id=client_run_id,
@@ -541,6 +569,13 @@ def publish(
                 expected_prediction_count=expected_submission_count,
             )
         except Exception as exc:
+            if is_idempotency_conflict(exc):
+                db.update("pipeline_execution", {"run_id": f"eq.{client_run_id}"}, {
+                    "status": "failed",
+                    "error": f"cycle already submitted by an earlier run; model {version} submits from the next cycle",
+                })
+                update_sync_status_state(db, "SUCCESS")
+                raise CycleAlreadySubmitted(f"cycle {cycle_id} was already submitted with different content; model {version} submits from the next cycle") from exc
             db.update("pipeline_execution", {"run_id": f"eq.{client_run_id}"}, {
                 "status": "failed",
                 "error": f"{type(exc).__name__}: {exc}",
@@ -616,6 +651,9 @@ def main() -> None:
         print(json.dumps(result, indent=2, default=str))
         write_pipeline_status("SUCCESS", "Ingesta, inferencia, métricas y publicación confirmadas.")
         print("[INFO] PIPELINE SUCCESS")
+    except CycleAlreadySubmitted as exc:
+        write_pipeline_status("SUCCESS", f"Ciclo ya enviado: {exc}")
+        print(f"[WARNING] PIPELINE CYCLE_ALREADY_SUBMITTED: {exc}")
     except WaitingForOpenCycle:
         print("[WARNING] PIPELINE WAITING_FOR_OPEN_CYCLE", file=sys.stderr)
         raise SystemExit(2)
