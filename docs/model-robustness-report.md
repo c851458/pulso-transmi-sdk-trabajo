@@ -86,6 +86,63 @@ rolling supere un umbral acordado durante dos ventanas consecutivas. El
 boosting puede ser reemplazado por Ridge si el tiempo de ejecucion o la
 variabilidad temporal se vuelven mas importantes que la mejora de error.
 
+## Modelo robusto al drift (2026-09-30)
+
+Se añadió el candidato `drift_robust_ensemble` (`src/robust_model.py`),
+pensado para adaptarse a cambios fuertes en la distribución de los datos:
+
+- **Pesos por recencia** (`RecencyWeighted`): cada fila pesa
+  `0.5 ^ (antigüedad / RECENCY_HALF_LIFE_DAYS)`, con 14 días por defecto y un
+  mínimo de 0,05. Tras un cambio de régimen, los datos nuevos dominan el ajuste
+  sin descartar la historia.
+- **Ensamble adaptativo** (`DriftRobustEnsemble`) de tres miembros diversos:
+  - `hgb_poisson`: gradient boosting con pérdida Poisson, adecuada para conteos
+    no negativos y cambios multiplicativos;
+  - `hgb_absolute`: gradient boosting con error absoluto, que no se deja
+    arrastrar por picos de demanda;
+  - `ridge`: lineal, el único miembro que extrapola cuando una variable sale
+    del rango de entrenamiento (los árboles se quedan planos).
+
+  Cada miembro pesa `1 / MAE²` según su error en el último 15 % cronológico
+  del entrenamiento; si un drift hace fallar a un miembro, pierde peso en el
+  siguiente reentrenamiento.
+- **Salvaguarda**: predicciones recortadas a `[0, 1,5 × demanda máxima vista]`,
+  para que una extrapolación extrema no publique valores absurdos.
+- **Selección consciente del drift**: los candidatos se ordenan por
+  `cv_recent_mae` (MAE medio de los 2 folds temporales más recientes, los más
+  parecidos a producción) y luego por estabilidad, en lugar del MAE promedio de
+  todos los folds. También se registra `cv_worst_mae` (peor fold).
+
+La clase vive en `src/` y no en el script de entrenamiento porque joblib guarda
+referencias por módulo: el pipeline debe poder importarla al cargar el
+artefacto.
+
+### Comparación con los datos actuales (51.840 observaciones)
+
+| Modelo | MAE CV medio | MAE folds recientes | MAE peor fold | MAE test | RMSE test | WAPE test | R² |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| **drift_robust_ensemble** | **49,27** | **45,39** | **59,97** | **46,35** | 76,24 | **12,7 %** | 0,945 |
+| hist_gradient_boosting | 51,14 | 47,04 | 64,60 | 47,67 | **75,03** | 13,0 % | 0,946 |
+| random_forest | 53,66 | 49,30 | 67,09 | 48,95 | 78,48 | 13,4 % | 0,941 |
+| robust_ridge | 202,09 | 202,08 | 204,77 | 207,55 | 277,62 | 56,8 % | 0,267 |
+| baseline_linear | 202,25 | 202,22 | 205,00 | 207,52 | 277,55 | 56,8 % | 0,267 |
+
+- El ensamble reduce el MAE en los folds recientes un 3,5 % y en el peor fold
+  un 7,2 % frente a `hist_gradient_boosting`; su RMSE es ligeramente mayor
+  (+1,6 %), porque el miembro de error absoluto sacrifica algo en los picos.
+- Pesos aprendidos: `hgb_poisson` 0,495, `hgb_absolute` 0,479, `ridge` 0,027.
+  Con los datos actuales el Ridge casi no participa (MAE 201 en el tramo
+  reciente); su peso solo crece si un drift deja a los árboles peor que él.
+- Prueba de estrés: multiplicar `event_intensity` (rango de entrenamiento
+  0-1) por 1,5, 2 y 3 mueve la predicción media de 507 a 510, 512 y 517: sin
+  saltos ni valores negativos.
+- Costo: unos 97 s de entrenamiento del candidato (2 min 45 s el script
+  completo en local), dentro del límite de 30 min del workflow.
+
+`tests/test_robust_model.py` verifica los pesos por recencia, el recorte de
+predicciones extremas, que la ponderación por recencia se adapta mejor a un
+cambio de régimen simulado y que el modelo sobrevive al pickling.
+
 ## Limitaciones
 
 El corte disponible contiene 45 dias y solo 12 estaciones. No hay todavia una

@@ -8,22 +8,24 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from joblib import dump
-from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import HistGradientBoostingRegressor, RandomForestRegressor
-from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LinearRegression, Ridge
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.model_selection import TimeSeriesSplit, cross_validate
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder, RobustScaler
 
 from src.mlflow_tracking import log_training_run
+from src.robust_model import DriftRobustEnsemble, RecencyWeighted, build_preprocessor
 from src.supabase_resilience import SupabaseRestClient
 
 
 TABLE_PAGE_SIZE = 1000
 TRAIN_FRACTION = 0.8
 RANDOM_STATE = 42
+# Recency half-life of the drift-robust candidate: data this many days old weighs half.
+RECENCY_HALF_LIFE_DAYS = float(os.getenv("RECENCY_HALF_LIFE_DAYS", "14"))
+# Candidates are ranked by MAE on the most recent CV folds, the ones closest to production.
+RECENT_FOLDS = 2
 ARTIFACT_DIR = Path("artifacts/baseline")
 
 
@@ -82,43 +84,7 @@ def add_features(dataset: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
-def feature_columns() -> tuple[list[str], list[str]]:
-    categorical = ["station_id", "corridor"]
-    numeric = [
-        "latitude",
-        "longitude",
-        "event_intensity",
-        "rain_forecast",
-        "rain_mm",
-        "temperature_c",
-        "temperature_forecast",
-        "hour_sin",
-        "hour_cos",
-        "weekday_sin",
-        "weekday_cos",
-    ]
-    return categorical, numeric
-
-
-def build_preprocessor(*, dense: bool = False) -> ColumnTransformer:
-    categorical, numeric = feature_columns()
-    preprocessor = ColumnTransformer(
-        [
-            ("categorical", Pipeline([
-                ("imputer", SimpleImputer(strategy="most_frequent")),
-                ("encoder", OneHotEncoder(handle_unknown="ignore", sparse_output=not dense)),
-            ]), categorical),
-            ("numeric", Pipeline([
-                ("imputer", SimpleImputer(strategy="median")),
-                ("scaler", RobustScaler()),
-            ]), numeric),
-        ],
-        remainder="drop",
-    )
-    return preprocessor
-
-
-def build_models() -> dict[str, Pipeline]:
+def build_models() -> dict[str, object]:
     return {
         "baseline_linear": Pipeline([
             ("preprocess", build_preprocessor()),
@@ -153,12 +119,15 @@ def build_models() -> dict[str, Pipeline]:
                 random_state=RANDOM_STATE,
             )),
         ]),
+        "drift_robust_ensemble": RecencyWeighted(DriftRobustEnsemble(), half_life_days=RECENCY_HALF_LIFE_DAYS),
     }
 
 
-def evaluate_model(name: str, model: Pipeline, train: pd.DataFrame, test: pd.DataFrame, predictors: list[str], target: str) -> tuple[dict[str, object], Pipeline, np.ndarray]:
+def evaluate_model(name: str, model, train: pd.DataFrame, test: pd.DataFrame, predictors: list[str], target: str) -> tuple[dict[str, object], object, np.ndarray]:
     started = time.perf_counter()
     cv = TimeSeriesSplit(n_splits=5)
+    # Recency-weighted candidates need each row's timestamp; cross_validate slices it per fold.
+    fit_params = {"timestamps": train["observed_at"].to_numpy()} if isinstance(model, RecencyWeighted) else {}
     cv_scores = cross_validate(
         model,
         train[predictors],
@@ -166,8 +135,9 @@ def evaluate_model(name: str, model: Pipeline, train: pd.DataFrame, test: pd.Dat
         cv=cv,
         scoring={"mae": "neg_mean_absolute_error", "rmse": "neg_root_mean_squared_error", "r2": "r2"},
         n_jobs=None,
+        params=fit_params,
     )
-    model.fit(train[predictors], train[target])
+    model.fit(train[predictors], train[target], **fit_params)
     predictions = np.maximum(0.0, model.predict(test[predictors]))
     actual = test[target].to_numpy()
     absolute_error = np.abs(actual - predictions)
@@ -180,6 +150,8 @@ def evaluate_model(name: str, model: Pipeline, train: pd.DataFrame, test: pd.Dat
         "cv_rmse_std": float(cv_scores["test_rmse"].std()),
         "cv_r2_mean": float(cv_scores["test_r2"].mean()),
         "cv_r2_std": float(cv_scores["test_r2"].std()),
+        "cv_recent_mae": float(-cv_scores["test_mae"][-RECENT_FOLDS:].mean()),
+        "cv_worst_mae": float(-cv_scores["test_mae"].min()),
         "mae": float(mean_absolute_error(actual, predictions)),
         "rmse": float(np.sqrt(mean_squared_error(actual, predictions))),
         "r2": float(r2_score(actual, predictions)),
@@ -226,7 +198,7 @@ def main() -> None:
         model_results.append(result)
         fitted_models[name] = fitted
         test_predictions[name] = candidate_predictions
-    comparison = pd.DataFrame(model_results).sort_values(["cv_mae_mean", "stability_score"])
+    comparison = pd.DataFrame(model_results).sort_values(["cv_recent_mae", "stability_score"])
     selected_name = str(comparison.iloc[0]["model"])
     model = fitted_models[selected_name]
     predictions = test_predictions[selected_name]
@@ -248,7 +220,7 @@ def main() -> None:
             "random_state": None,
             "reason": "time-series leakage prevention",
         },
-        "selection": {"criterion": "lowest temporal CV MAE, then stability", "selected_model": selected_name},
+        "selection": {"criterion": f"lowest MAE on the {RECENT_FOLDS} most recent temporal CV folds, then stability", "selected_model": selected_name},
         "model_comparison": model_results,
         "test": {
             **selected_result,
@@ -306,6 +278,8 @@ def main() -> None:
         "test_fraction": 1 - TRAIN_FRACTION,
         "cv_splits": 5,
         "random_state": RANDOM_STATE,
+        "recency_half_life_days": RECENCY_HALF_LIFE_DAYS,
+        "selection_recent_folds": RECENT_FOLDS,
         "dataset_tables": metrics["dataset"]["table"],
         "dataset_rows": metrics["dataset"]["observations"],
         "window_start": dataset["observed_at"].min().isoformat(),

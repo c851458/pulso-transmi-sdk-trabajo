@@ -130,6 +130,10 @@ Nunca escribas API keys, contraseñas de Supabase ni tokens dentro del código.
   [docs/work-log-2026-09-30.md](docs/work-log-2026-09-30.md).
 - `model_drift.yml` registra PSI y ratio de WAPE como alertas y reentrena con
   el mismo criterio de accuracy ([docs/model-drift.md](docs/model-drift.md)).
+- Entre los candidatos está `drift_robust_ensemble`, un ensamble con pesos por
+  recencia que se adapta a cambios fuertes de drift; el ganador se elige por su
+  error en los periodos más recientes
+  ([docs/model-robustness-report.md](docs/model-robustness-report.md)).
 
 ## Supabase y Vercel
 
