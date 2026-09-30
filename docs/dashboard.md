@@ -12,6 +12,30 @@ El endpoint `GET /api/dashboard` consulta las tablas existentes:
 - `model_drift_execution`: auditoría de ejecuciones, PSI, ventanas, resultado y errores.
 - `pipeline_execution` y `pipeline_sync_status`: estado complementario del pipeline.
 
+Para las gráficas históricas se hacen dos consultas acotadas a los últimos 7
+días: `training_run` solo con `metrics->test->{wape,mae,rmse}` (no el JSONB
+completo) y `model_drift_check` con PSI, variables con drift, rendimiento y
+decisión.
+
+## Paneles
+
+- **Métricas actuales**: WAPE, MAE, RMSE, R², accuracy y MAE de validación
+  cruzada de la evaluación de prueba del modelo activo, con la variación
+  frente al modelo anterior (▲ mejor / ▼ peor según la dirección de cada
+  métrica), más el WAPE en producción de la última evaluación de drift.
+- **Drift y reentrenamientos** (rango 24 h / 72 h / 7 días):
+  - *WAPE: prueba al reentrenar vs. producción*: WAPE de prueba de cada modelo
+    (escalonado, cambia en cada reentrenamiento) y WAPE reciente medido por el
+    control de drift.
+  - *Variables con drift*: número de variables con PSI sobre el umbral, con la
+    línea de alerta (`drifted_features_required`) y un triángulo en cada alerta.
+  - *Reentrenamientos*: una marca por modelo entrenado y, en rojo, las
+    evaluaciones de drift que recomendaron reentrenar.
+  - Tabla desplegable con los reentrenamientos del rango.
+
+Las gráficas están en `app/charts.tsx` (SVG sin dependencias), con tooltip y
+cursor al pasar el puntero.
+
 Las métricas no presentes en esas tablas se muestran como `—`; el dashboard no
 las estima. Los umbrales se leen del JSONB de la última evaluación y usan
 `0.20`, `1.25` y `2` únicamente si el registro no los contiene.
