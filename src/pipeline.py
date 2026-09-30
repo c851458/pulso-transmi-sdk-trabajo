@@ -26,6 +26,7 @@ ARTIFACT_DIR = Path("artifacts/baseline")
 OUTBOX_DIR = Path("artifacts/outbox")
 TRAIN_SCRIPT = Path("examples/03_supabase_linear_baseline.py")
 REQUIRED_METRICS = ("mae", "rmse", "wape", "accuracy")
+RETRAIN_INTERVAL_HOURS = float(os.getenv("RETRAIN_INTERVAL_HOURS", "1"))
 LOG = logging.getLogger("pulso.pipeline")
 
 
@@ -60,6 +61,16 @@ def run_training() -> None:
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def retrain_due(active_model: dict[str, Any] | None, now: datetime, interval_hours: float = RETRAIN_INTERVAL_HOURS) -> bool:
+    """Retrain when there is no usable active model or it is older than the interval."""
+    if not active_model or not active_model.get("artifact_base64") or not active_model.get("trained_at"):
+        return True
+    trained_at = pd.Timestamp(active_model["trained_at"])
+    if trained_at.tzinfo is None:
+        trained_at = trained_at.tz_localize("UTC")
+    return now - trained_at.to_pydatetime() >= timedelta(hours=interval_hours)
 
 
 def _validate_finite(value: Any, path: str) -> None:
@@ -556,6 +567,7 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
     parser = argparse.ArgumentParser()
     parser.add_argument("--publish-only", action="store_true")
+    parser.add_argument("--force-retrain", action="store_true")
     args = parser.parse_args()
     env = load_env()
     print("[INFO] Pipeline iniciado")
@@ -565,7 +577,12 @@ def main() -> None:
         raise RuntimeError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required")
     try:
         with SupabaseRestClient(supabase_url, supabase_key) as db:
-            if args.publish_only:
+            publish_only = args.publish_only
+            if not publish_only and not args.force_retrain:
+                publish_only = not retrain_due(db.active_model(), utc_now())
+                if publish_only:
+                    print(f"[INFO] Active model is younger than {RETRAIN_INTERVAL_HOURS:g}h; skipping retraining")
+            if publish_only:
                 restore_active_artifacts(db)
                 print("[INFO] Active model artifact restored from Supabase")
                 result = publish(env, persist_evaluation=False, db=db)

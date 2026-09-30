@@ -35,9 +35,15 @@ eso podia crear carreras entre ejecuciones.
 - `model_drift.yml` conserva su schedule de `*/10 * * * *` y
   `workflow_dispatch`. GitHub no garantiza esa frecuencia (en la práctica corre
   con horas de retraso); se recomienda dispararlo también desde cron-job.org y
-  retirar entonces su `schedule`. `pipeline.yml` ejecuta ingesta, entrenamiento y publicación
+  retirar entonces su `schedule`. `pipeline.yml` ejecuta ingesta y publicación
   cada diez minutos mediante `workflow_dispatch` disparado desde cron-job.org; no
   tiene `schedule` propio para no duplicar ejecuciones.
+- El reentrenamiento corre en loop cada hora: en cada ejecución `src.pipeline`
+  consulta el `trained_at` del modelo activo y solo reentrena si tiene al menos
+  `RETRAIN_INTERVAL_HOURS` (variable del repositorio, `1` por defecto) o si no
+  hay artefacto activo. En las demás ejecuciones restaura el modelo activo desde
+  Supabase y publica con él. El input `force_retrain` de `workflow_dispatch`
+  (o `python -m src.pipeline --force-retrain`) fuerza un reentrenamiento.
 - `data_pipeline.yml` permanece manual porque la ingesta ya forma parte del pipeline
   automático y un segundo schedule produciría ejecuciones duplicadas.
 - `supabase/migrations/20260927180000_monitoring_query_indexes.sql` añade

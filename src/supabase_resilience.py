@@ -150,7 +150,7 @@ class SupabaseRestClient:
     def active_model(self) -> dict[str, Any] | None:
         rows = self.rows(
             "model",
-            select="id,version,algorithm,artifact_base64,artifact_sha256",
+            select="id,version,algorithm,trained_at,artifact_base64,artifact_sha256",
             status="eq.active",
             order="trained_at.desc",
             limit="1",
