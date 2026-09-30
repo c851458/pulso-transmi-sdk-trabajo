@@ -119,6 +119,18 @@ indicado por el profesor.
 
 Nunca escribas API keys, contraseñas de Supabase ni tokens dentro del código.
 
+### Automatización de este repositorio
+
+- [cron-job.org](docs/cron-job.md) dispara `pipeline.yml` cada 10 minutos
+  (`workflow_dispatch`): ingesta, decisión de reentrenamiento y publicación.
+- El modelo **solo se reentrena si su accuracy reciente baja de 79 %**
+  (`RETRAIN_ACCURACY_THRESHOLD`), con al menos 1 h entre reentrenamientos
+  (`RETRAIN_INTERVAL_HOURS`). Si no, se publica con el modelo activo.
+  La medición está en `src/accuracy.py`; el detalle, en
+  [docs/work-log-2026-09-30.md](docs/work-log-2026-09-30.md).
+- `model_drift.yml` registra PSI y ratio de WAPE como alertas y reentrena con
+  el mismo criterio de accuracy ([docs/model-drift.md](docs/model-drift.md)).
+
 ## Supabase y Vercel
 
 Supabase persiste ejecuciones, métricas, predicciones y estado del modelo. Vercel
@@ -130,7 +142,10 @@ GitHub Actions.
 La aplicación Next.js incluida en `app/` es una capa de visualización de solo
 lectura. Permite consultar el modelo activo, WAPE y ratio de rendimiento, PSI
 por variable, recomendación de reentrenamiento, alertas, historial de drift,
-ejecuciones y versiones del modelo.
+ejecuciones y versiones del modelo. Incluye las métricas actuales del modelo
+activo frente al anterior, la accuracy reciente con el umbral de
+reentrenamiento, gráficas en el tiempo de WAPE, drift y reentrenamientos
+(24 h / 72 h / 7 días) y la distribución de cada métrica.
 
 ```bash
 npm install
