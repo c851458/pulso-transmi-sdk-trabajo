@@ -149,3 +149,53 @@ export function RetrainRug({ domain, events }: { domain: [number, number]; event
     </div>
   </figure>;
 }
+
+export function Histogram({ title, values, current, currentLabel, format, color, unit, bins = 12 }: {
+  title: string; values: number[]; current: number | null; currentLabel: string; format: (value: number) => string; color: string; unit: string; bins?: number;
+}) {
+  const [ref, width] = useWidth();
+  const [hover, setHover] = useState<number | null>(null);
+  const height = 132;
+  const m = { top: 20, right: 12, bottom: 24, left: 12 };
+  const innerW = Math.max(0, width - m.left - m.right);
+  const innerH = height - m.top - m.bottom;
+  const sorted = [...values].sort((a, b) => a - b);
+  const min = sorted[0];
+  const max = sorted.at(-1);
+  const median = sorted.length ? (sorted.length % 2 ? sorted[(sorted.length - 1) / 2] : (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2) : null;
+  // A metric that never changed collapses into one bin instead of an invented spread.
+  const flat = min == null || max == null || Math.abs(max - min) <= Math.abs(max) * 1e-9;
+  const count = flat ? 1 : bins;
+  const lo = flat ? (min ?? 0) : min!;
+  const size = flat ? 1 : (max! - min!) / count;
+  const buckets = Array.from({ length: sorted.length ? count : 0 }, (_, i) => ({ from: lo + i * size, to: flat ? lo : lo + (i + 1) * size, n: 0 }));
+  for (const v of sorted) buckets[flat ? 0 : Math.min(count - 1, Math.floor((v - lo) / size))].n += 1;
+  const top = Math.max(1, ...buckets.map((b) => b.n));
+  const barW = flat ? Math.min(48, innerW) : innerW / count;
+  const barX = (i: number) => flat ? m.left + (innerW - barW) / 2 : m.left + i * barW;
+  const valueX = (v: number) => flat ? m.left + innerW / 2 : m.left + ((v - lo) / (max! - lo)) * innerW;
+  const bar = (x: number, w: number, h: number) => {
+    const r = Math.min(4, w / 2, h);
+    const y0 = m.top + innerH;
+    return `M${x},${y0}V${y0 - h + r}Q${x},${y0 - h} ${x + r},${y0 - h}H${x + w - r}Q${x + w},${y0 - h} ${x + w},${y0 - h + r}V${y0}Z`;
+  };
+  const hovered = hover != null ? buckets[hover] : null;
+  return <figure className="hist">
+    <figcaption><span>{title}</span><small>{sorted.length ? `n=${sorted.length} · mediana ${format(median!)}` : "Sin datos"}</small></figcaption>
+    <div className="tchart-body" ref={ref} style={{ height }}>
+      {width > 0 && <svg width={width} height={height} role="img" aria-label={`Distribución de ${title}`}>
+        <line x1={m.left} x2={m.left + innerW} y1={m.top + innerH} y2={m.top + innerH} className="grid" />
+        {buckets.map((b, i) => { const w = Math.max(1, barW - 2); const h = b.n ? Math.max(2, (b.n / top) * innerH) : 0; return <g key={i} onPointerEnter={() => setHover(i)} onPointerLeave={() => setHover(null)}>
+          {h > 0 && <path d={bar(barX(i) + 1, w, h)} fill={color} opacity={hover == null || hover === i ? 1 : 0.55} />}
+          <rect x={barX(i)} y={m.top} width={barW} height={innerH} fill="transparent" />
+        </g>; })}
+        {current != null && sorted.length > 0 && <g className="hist-current"><line x1={valueX(current)} x2={valueX(current)} y1={m.top - 4} y2={m.top + innerH} /><text x={Math.min(Math.max(valueX(current), m.left + 40), m.left + innerW - 40)} y={m.top - 8} textAnchor="middle">{currentLabel} {format(current)}</text></g>}
+        {sorted.length > 0 && (flat
+          ? <text x={m.left + innerW / 2} y={height - 6} className="axis" textAnchor="middle">sin variación</text>
+          : <><text x={m.left} y={height - 6} className="axis">{format(min!)}</text><text x={m.left + innerW} y={height - 6} className="axis" textAnchor="end">{format(max!)}</text></>)}
+        {!sorted.length && <text x={m.left + innerW / 2} y={m.top + innerH / 2} className="axis" textAnchor="middle">Sin datos en este rango</text>}
+      </svg>}
+      {hovered && <div className="tooltip" style={{ left: Math.max(0, Math.min(barX(hover!) + barW / 2 - 85, width - 175)), top: 0 }}><small>{flat ? format(hovered.from) : `${format(hovered.from)} – ${format(hovered.to)}`}</small><div><i style={{ borderColor: color }} /><b>{hovered.n}</b><span>{unit}</span></div></div>}
+    </div>
+  </figure>;
+}

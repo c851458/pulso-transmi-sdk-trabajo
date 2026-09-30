@@ -38,7 +38,7 @@ export async function GET() {
       table("pipeline_execution", "select=run_id,model_id,cycle_id,model_version,generated_at,metrics,prediction_count,payload_sha256,status,error,confirmed_at&order=generated_at.desc&limit=20"),
       table("pipeline_sync_status", "select=id,status,started_at,last_updated_at,records_received,records_inserted,records_updated,records_unchanged,error,updated_at&order=updated_at.desc&limit=1"),
       // Only the test metrics the timeline plots, not the full metrics JSONB of every run.
-      table("training_run", `select=model_id,started_at,wape:metrics->test->wape,mae:metrics->test->mae,rmse:metrics->test->rmse&started_at=gte.${since}&order=started_at.asc&limit=1500`),
+      table("training_run", `select=model_id,started_at,wape:metrics->test->wape,mae:metrics->test->mae,rmse:metrics->test->rmse,r2:metrics->test->r2,accuracy:metrics->test->accuracy&started_at=gte.${since}&order=started_at.asc&limit=1500`),
       table("model_drift_check", `select=checked_at,model_version,feature_psi,drifted_features,thresholds,performance,drift_alert,retrain&checked_at=gte.${since}&order=checked_at.asc&limit=1500`),
     ]);
     const read = (index: number) => {
@@ -82,7 +82,7 @@ export async function GET() {
       previousTraining: previousTraining ? { metrics: previousTraining.metrics ?? {}, version: previousModel?.version, trainedAt: previousModel?.trained_at } : null,
       timeline: {
         days: TIMELINE_DAYS,
-        retrains: trainingTimeline.map((row) => ({ date: row.started_at, model: row.model_id, wape: number(row.wape), mae: number(row.mae), rmse: number(row.rmse) })),
+        retrains: trainingTimeline.map((row) => ({ date: row.started_at, model: row.model_id, wape: number(row.wape), mae: number(row.mae), rmse: number(row.rmse), r2: number(row.r2), accuracy: number(row.accuracy) })),
         checks: checkTimeline.map((row) => ({
           date: row.checked_at, version: row.model_version ?? null,
           maxPsi: Math.max(...Object.values(row.feature_psi ?? {}).map((v) => number(v) ?? 0), 0),

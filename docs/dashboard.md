@@ -13,7 +13,7 @@ El endpoint `GET /api/dashboard` consulta las tablas existentes:
 - `pipeline_execution` y `pipeline_sync_status`: estado complementario del pipeline.
 
 Para las gráficas históricas se hacen dos consultas acotadas a los últimos 7
-días: `training_run` solo con `metrics->test->{wape,mae,rmse}` (no el JSONB
+días: `training_run` solo con `metrics->test->{wape,mae,rmse,r2,accuracy}` (no el JSONB
 completo) y `model_drift_check` con PSI, variables con drift, rendimiento y
 decisión.
 
@@ -22,7 +22,10 @@ decisión.
 - **Métricas actuales**: WAPE, MAE, RMSE, R², accuracy y MAE de validación
   cruzada de la evaluación de prueba del modelo activo, con la variación
   frente al modelo anterior (▲ mejor / ▼ peor según la dirección de cada
-  métrica), más el WAPE en producción de la última evaluación de drift.
+  métrica), más el WAPE y la accuracy en producción de la última evaluación
+  de drift. La accuracy en producción es `100 × (1 − WAPE en producción)`, en
+  la misma escala que la accuracy de prueba (`100 × (1 − WAPE de prueba)`), y
+  se muestra su diferencia en puntos frente a la de prueba.
 - **Drift y reentrenamientos** (rango 24 h / 72 h / 7 días):
   - *WAPE: prueba al reentrenar vs. producción*: WAPE de prueba de cada modelo
     (escalonado, cambia en cada reentrenamiento) y WAPE reciente medido por el
@@ -32,6 +35,12 @@ decisión.
   - *Reentrenamientos*: una marca por modelo entrenado y, en rojo, las
     evaluaciones de drift que recomendaron reentrenar.
   - Tabla desplegable con los reentrenamientos del rango.
+  - *Distribución de las métricas*: un histograma por métrica (WAPE, MAE,
+    RMSE, R² y accuracy de prueba, una muestra por reentrenamiento; accuracy en
+    producción, una muestra por evaluación de drift), con n, mediana, mínimo,
+    máximo y una línea punteada en el valor del modelo activo. Si una métrica
+    no varió en el rango se dibuja una sola barra con la leyenda
+    "sin variación".
 
 Las gráficas están en `app/charts.tsx` (SVG sin dependencias), con tooltip y
 cursor al pasar el puntero.
