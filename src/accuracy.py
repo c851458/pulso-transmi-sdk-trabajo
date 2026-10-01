@@ -21,6 +21,17 @@ def accuracy_from_wape(wape: float) -> float:
     return 100 * max(0.0, 1.0 - wape)
 
 
+def baseline_wape(metrics: dict[str, Any]) -> float:
+    """Read the temporal-test WAPE persisted by the training pipeline."""
+    test_metrics = metrics.get("test")
+    value = test_metrics.get("wape") if isinstance(test_metrics, dict) else metrics.get("wape")
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return value if math.isfinite(value) and value >= 0 else 0.0
+
+
 def wape(actual: pd.Series, predicted: pd.Series) -> float | None:
     actual = pd.to_numeric(actual, errors="coerce")
     predicted = pd.to_numeric(predicted, errors="coerce")

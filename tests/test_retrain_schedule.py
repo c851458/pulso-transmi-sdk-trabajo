@@ -73,3 +73,15 @@ def test_only_idempotency_conflicts_count_as_already_submitted() -> None:
     assert is_idempotency_conflict(PulsoTransmiError('HTTP 409: {"code": "idempotency_conflict"}', status_code=409))
     assert not is_idempotency_conflict(PulsoTransmiError("HTTP 409: other conflict", status_code=409))
     assert not is_idempotency_conflict(PulsoTransmiError("HTTP 500: idempotency_conflict", status_code=500))
+
+
+def test_retrains_when_wape_degrades_even_with_good_accuracy() -> None:
+    retrain, reason = retrain_decision(model(), 86.0, NOW, 79, 1, wape_ratio=1.30, ratio_threshold=1.25)
+    assert retrain
+    assert "WAPE ratio 1.30" in reason
+    assert retrain_decision(model(), 86.0, NOW, 79, 1, wape_ratio=1.25, ratio_threshold=1.25)[0]
+    assert not retrain_decision(model(), 86.0, NOW, 79, 1, wape_ratio=1.10, ratio_threshold=1.25)[0]
+
+
+def test_wape_trigger_waits_for_minimum_interval() -> None:
+    assert not retrain_decision(model("2026-09-30T11:30:00+00:00"), 86.0, NOW, 79, 1, wape_ratio=1.5)[0]

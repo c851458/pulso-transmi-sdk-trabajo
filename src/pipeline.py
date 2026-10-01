@@ -18,7 +18,7 @@ import pandas as pd
 import numpy as np
 
 from pulso_transmi import PulsoTransmiClient
-from src.accuracy import recent_accuracy
+from src.accuracy import baseline_wape, recent_accuracy
 from src.mlflow_tracking import load_metadata
 from src.supabase_resilience import SupabaseRestClient
 
@@ -30,6 +30,8 @@ REQUIRED_METRICS = ("mae", "rmse", "wape", "accuracy")
 RETRAIN_ACCURACY_THRESHOLD = float(os.getenv("RETRAIN_ACCURACY_THRESHOLD", "79"))
 # Minimum spacing between retrains, so a retrain that does not recover accuracy is not repeated every run.
 RETRAIN_INTERVAL_HOURS = float(os.getenv("RETRAIN_INTERVAL_HOURS", "1"))
+# Retrain also when production WAPE degrades this much versus the model's test WAPE (1.25 = 25 % worse).
+RETRAIN_WAPE_RATIO = float(os.getenv("DRIFT_PERFORMANCE_RATIO", "1.25"))
 LOG = logging.getLogger("pulso.pipeline")
 
 
@@ -94,20 +96,31 @@ def retrain_decision(
     now: datetime,
     threshold: float = RETRAIN_ACCURACY_THRESHOLD,
     interval_hours: float = RETRAIN_INTERVAL_HOURS,
+    wape_ratio: float | None = None,
+    ratio_threshold: float = RETRAIN_WAPE_RATIO,
 ) -> tuple[bool, str]:
-    """Retrain only when recent accuracy falls below the threshold (or no model exists)."""
+    """Retrain when recent accuracy falls below the threshold, when production WAPE
+    reaches ratio_threshold x the test WAPE, or when no model exists."""
     if not usable_model(active_model):
         return True, "no usable active model"
-    if accuracy is None:
-        return False, "recent accuracy unavailable; keeping the active model"
-    if accuracy >= threshold:
-        return False, f"accuracy {accuracy:.2f}% >= {threshold:g}%"
+    causes = []
+    if accuracy is not None and accuracy < threshold:
+        causes.append(f"accuracy {accuracy:.2f}% < {threshold:g}%")
+    if wape_ratio is not None and wape_ratio >= ratio_threshold:
+        causes.append(f"WAPE ratio {wape_ratio:.2f} >= {ratio_threshold:g}")
+    if not causes:
+        if accuracy is None and wape_ratio is None:
+            return False, "recent accuracy unavailable; keeping the active model"
+        measured = [f"accuracy {accuracy:.2f}% >= {threshold:g}%" if accuracy is not None else "accuracy n/a"]
+        measured.append(f"WAPE ratio {wape_ratio:.2f} < {ratio_threshold:g}" if wape_ratio is not None else "WAPE ratio n/a")
+        return False, "; ".join(measured)
+    reason = " and ".join(causes)
     trained_at = pd.Timestamp(active_model["trained_at"])
     if trained_at.tzinfo is None:
         trained_at = trained_at.tz_localize("UTC")
     if now - trained_at.to_pydatetime() < timedelta(hours=interval_hours):
-        return False, f"accuracy {accuracy:.2f}% < {threshold:g}% but the model is younger than {interval_hours:g}h"
-    return True, f"accuracy {accuracy:.2f}% < {threshold:g}%"
+        return False, f"{reason} but the model is younger than {interval_hours:g}h"
+    return True, reason
 
 
 def _validate_finite(value: Any, path: str) -> None:
@@ -637,7 +650,13 @@ def main() -> None:
                 measured = recent_accuracy(db, int(active_model["id"])) if usable_model(active_model) else {"accuracy": None, "source": "unavailable", "rows": 0}
                 if measured["accuracy"] is not None:
                     print(f"[INFO] Recent accuracy {measured['accuracy']:.2f}% (source={measured['source']}, rows={measured['rows']})")
-                retrain, reason = retrain_decision(active_model, measured["accuracy"], utc_now())
+                wape_ratio = None
+                if measured.get("wape") is not None:
+                    baseline = baseline_wape(db.latest_training_metrics(int(active_model["id"])))
+                    wape_ratio = measured["wape"] / baseline if baseline > 0 else None
+                    if wape_ratio is not None:
+                        print(f"[INFO] Recent WAPE {measured['wape']:.4f} vs test {baseline:.4f} (ratio {wape_ratio:.2f})")
+                retrain, reason = retrain_decision(active_model, measured["accuracy"], utc_now(), wape_ratio=wape_ratio)
                 publish_only = not retrain
                 print(f"[INFO] {'Retraining' if retrain else 'Skipping retraining'}: {reason}")
             if publish_only:

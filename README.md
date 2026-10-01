@@ -123,13 +123,14 @@ Nunca escribas API keys, contraseñas de Supabase ni tokens dentro del código.
 
 - [cron-job.org](docs/cron-job.md) dispara `pipeline.yml` cada 10 minutos
   (`workflow_dispatch`): ingesta, decisión de reentrenamiento y publicación.
-- El modelo **solo se reentrena si su accuracy reciente baja de 79 %**
-  (`RETRAIN_ACCURACY_THRESHOLD`), con al menos 1 h entre reentrenamientos
+- El modelo **se reentrena si su accuracy reciente baja de 79 %**
+  (`RETRAIN_ACCURACY_THRESHOLD`) **o si su WAPE reciente empeora un 25 % o más**
+  frente al WAPE de prueba (`DRIFT_PERFORMANCE_RATIO` = 1.25), con al menos 1 h entre reentrenamientos
   (`RETRAIN_INTERVAL_HOURS`). Si no, se publica con el modelo activo.
   La medición está en `src/accuracy.py`; el detalle, en
   [docs/work-log-2026-09-30.md](docs/work-log-2026-09-30.md).
-- `model_drift.yml` registra PSI y ratio de WAPE como alertas y reentrena con
-  el mismo criterio de accuracy ([docs/model-drift.md](docs/model-drift.md)).
+- `model_drift.yml` registra PSI como alerta y reentrena con el mismo
+  criterio de accuracy y ratio de WAPE ([docs/model-drift.md](docs/model-drift.md)).
 - Entre los candidatos está `drift_robust_ensemble`, un ensamble con pesos por
   recencia que se adapta a cambios fuertes de drift; el ganador se elige por su
   error en los periodos más recientes

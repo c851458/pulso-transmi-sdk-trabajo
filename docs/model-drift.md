@@ -12,20 +12,23 @@ flujo cada diez minutos y también permite `workflow_dispatch`:
 6. persistencia de la auditoría de cada ejecución en `public.model_drift_execution`;
 7. reentrenamiento y publicación solo cuando la decisión sea `retrain=true`,
    es decir, cuando la accuracy reciente baja de `RETRAIN_ACCURACY_THRESHOLD`
-   (79 %) fuera del cooldown. El PSI y el ratio de WAPE siguen generando
-   alertas de drift, pero ya no disparan el reentrenamiento por sí solos.
+   (79 %) o el WAPE reciente llega a `DRIFT_PERFORMANCE_RATIO` (1.25) veces el
+   WAPE de prueba, fuera del cooldown. El PSI sigue generando alertas de drift,
+   pero no dispara el reentrenamiento por sí solo.
 
 Si la publicación del modelo actual falla por una indisponibilidad transitoria
 de la API o de Supabase, el job intenta publicar hasta tres veces, con esperas
 de 60 y 120 segundos. Si todos fallan, la siguiente ejecución programada de
 10 minutos vuelve a intentarlo. No existe un retry infinito.
 
-## Reentrenamiento por accuracy
+## Reentrenamiento por accuracy y WAPE
 
 [pipeline.yml](../.github/workflows/pipeline.yml) (cada 10 minutos, vía
 cron-job.org) y este workflow usan el mismo criterio: la accuracy reciente del
-modelo activo, `100 × (1 − WAPE)`, calculada por `src/accuracy.py`. Solo se
-reentrena si baja de `RETRAIN_ACCURACY_THRESHOLD` (79 %). El pipeline exige
+modelo activo, `100 × (1 − WAPE)`, calculada por `src/accuracy.py`. Se
+reentrena si baja de `RETRAIN_ACCURACY_THRESHOLD` (79 %) o, aunque la accuracy
+no baje, si el WAPE reciente empeora un 25 % o más frente al WAPE de prueba del
+modelo (`DRIFT_PERFORMANCE_RATIO` = 1.25). El pipeline exige
 además `RETRAIN_INTERVAL_HOURS` (1 h) desde el último entrenamiento; este
 workflow, `RETRAIN_COOLDOWN_HOURS`. Detalle en
 [work-log-2026-09-30.md](work-log-2026-09-30.md).
@@ -36,7 +39,7 @@ workflow, `RETRAIN_COOLDOWN_HOURS`. Detalle en
 | --- | ---: | --- |
 | `DRIFT_PSI_THRESHOLD` | `0.20` | Una variable se considera drifted desde este PSI |
 | `DRIFTED_FEATURES_REQUIRED` | `2` | Variables drifted necesarias para activar alerta |
-| `DRIFT_PERFORMANCE_RATIO` | `1.25` | WAPE reciente >= 1.25x el baseline |
+| `DRIFT_PERFORMANCE_RATIO` | `1.25` | Reentrena si el WAPE reciente >= 1.25x el WAPE de prueba |
 | `DRIFT_MIN_ROWS` | `96` | Mínimo de filas en cada ventana |
 | `RETRAIN_COOLDOWN_HOURS` | `24` | Evita reentrenamientos repetidos |
 | `RETRAIN_ACCURACY_THRESHOLD` | `79` | Reentrena si la accuracy reciente (%) baja de este valor |

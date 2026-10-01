@@ -12,7 +12,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from src.accuracy import recent_accuracy
+from src.accuracy import baseline_wape, recent_accuracy
 from src.ingest import load_env
 from src.supabase_resilience import SupabaseRestClient
 
@@ -101,17 +101,6 @@ def latest_training_metrics(db: SupabaseRestClient, model_id: int | None) -> dic
     return rows[0].get("metrics") or {} if rows else {}
 
 
-def baseline_wape(metrics: dict[str, Any]) -> float:
-    """Read the temporal-test WAPE persisted by the training pipeline."""
-    test_metrics = metrics.get("test")
-    value = test_metrics.get("wape") if isinstance(test_metrics, dict) else metrics.get("wape")
-    try:
-        value = float(value)
-    except (TypeError, ValueError):
-        return 0.0
-    return value if math.isfinite(value) and value >= 0 else 0.0
-
-
 def evaluate(env: dict[str, str], db: SupabaseRestClient | None = None) -> dict[str, Any]:
     owns_db = db is None
     db = db or SupabaseRestClient(env["SUPABASE_URL"], env["SUPABASE_SERVICE_ROLE_KEY"])
@@ -183,13 +172,13 @@ def evaluate(env: dict[str, str], db: SupabaseRestClient | None = None) -> dict[
     accuracy_alert = accuracy is not None and accuracy < RETRAIN_ACCURACY_THRESHOLD
 
     drifted_count = len(feature_alerts)
-    # PSI and the WAPE ratio still raise drift alerts, but only low accuracy triggers retraining.
+    # PSI only raises drift alerts; low accuracy or a production WAPE >= ratio x test WAPE triggers retraining.
     drift_alert = drifted_count >= DRIFTED_FEATURES_REQUIRED or performance["alert"]
     cooldown = False
     if model:
         trained_at = pd.Timestamp(model["trained_at"])
         cooldown = trained_at >= (utc_now() - timedelta(hours=RETRAIN_COOLDOWN_HOURS))
-    retrain = accuracy_alert and not cooldown
+    retrain = (accuracy_alert or performance["alert"]) and not cooldown
     reason = "; ".join([
         f"accuracy={'n/a' if accuracy is None else f'{accuracy:.2f}%'} (threshold {RETRAIN_ACCURACY_THRESHOLD:g}%, source={measured['source']})",
         f"features={','.join(feature_alerts) or 'none'}",
