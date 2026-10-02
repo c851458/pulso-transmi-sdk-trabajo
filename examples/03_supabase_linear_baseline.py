@@ -8,24 +8,18 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from joblib import dump
-from sklearn.ensemble import HistGradientBoostingRegressor, RandomForestRegressor
-from sklearn.linear_model import LinearRegression, Ridge
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from sklearn.model_selection import TimeSeriesSplit, cross_validate
-from sklearn.pipeline import Pipeline
 
+from src.lag_model import HORIZONS, LagEnsembleForecaster, demand_matrix
 from src.mlflow_tracking import log_training_run
-from src.robust_model import DriftRobustEnsemble, RecencyWeighted, build_preprocessor
 from src.supabase_resilience import SupabaseRestClient
 
 
-TABLE_PAGE_SIZE = 1000
-TRAIN_FRACTION = 0.8
-RANDOM_STATE = 42
-# Recency half-life of the drift-robust candidate: data this many days old weighs half.
-RECENCY_HALF_LIFE_DAYS = float(os.getenv("RECENCY_HALF_LIFE_DAYS", "14"))
-# Candidates are ranked by MAE on the most recent CV folds, the ones closest to production.
-RECENT_FOLDS = 2
+MODEL_NAME = "lag_adaptive_ensemble"
+# The temporal test covers the latest days, the ones closest to the regime the model will forecast.
+TEST_DAYS = int(os.getenv("TEST_DAYS", "3"))
+# Recency half-life of the boosted correction: data this many days old weighs half.
+RECENCY_HALF_LIFE_DAYS = float(os.getenv("RECENCY_HALF_LIFE_DAYS", "7"))
 ARTIFACT_DIR = Path("artifacts/baseline")
 
 
@@ -42,124 +36,46 @@ def load_env(path: Path = Path(".env")) -> dict[str, str]:
     return values
 
 
-def fetch_dataset(client: SupabaseRestClient) -> pd.DataFrame:
-    stations = pd.DataFrame(client.get_all(
-        "station", "station_id,station_name,corridor,latitude,longitude"
-    ))
+def fetch_observations(client: SupabaseRestClient) -> pd.DataFrame:
+    """Demand history. Context is not used: the API publishes none after the starter
+    dataset, so it would be stale at every forecast."""
     observations = pd.DataFrame(client.get_all(
-        "demand_observation", "station_id,observed_at,demand"
+        "demand_observation", "station_id,observed_at,demand", order="observed_at.asc,station_id.asc"
     ))
-    context = pd.DataFrame(client.get_all(
-        "context_observation",
-        "observed_at,event_intensity,rain_forecast,rain_mm,temperature_c,temperature_forecast",
-    ))
-    observations["observed_at"] = pd.to_datetime(
-        observations["observed_at"], utc=True
-    )
-    context["observed_at"] = pd.to_datetime(context["observed_at"], utc=True)
-    dataset = (
-        observations.merge(
-            context, on="observed_at", how="inner", validate="many_to_one"
-        )
-        .merge(stations, on="station_id", how="inner", validate="many_to_one")
-        .sort_values(["observed_at", "station_id"])
-        .reset_index(drop=True)
-    )
-    if len(dataset) != len(observations):
-        raise ValueError("The joins changed the observation row count")
-    dataset = dataset.replace([np.inf, -np.inf], np.nan)
-    dataset = dataset.drop_duplicates(["station_id", "observed_at"], keep="last")
-    if dataset["demand"].isna().any() or (dataset["demand"] < 0).any():
+    observations["station_id"] = observations["station_id"].astype(str).str.zfill(5)
+    observations["observed_at"] = pd.to_datetime(observations["observed_at"], utc=True)
+    observations = observations.drop_duplicates(["station_id", "observed_at"], keep="last")
+    if observations["demand"].isna().any() or (observations["demand"] < 0).any():
         raise ValueError("Target demand contains invalid values")
-    return dataset
+    return observations.sort_values(["observed_at", "station_id"]).reset_index(drop=True)
 
 
-def add_features(dataset: pd.DataFrame) -> pd.DataFrame:
-    result = dataset.copy()
-    minutes = result["observed_at"].dt.hour * 60 + result["observed_at"].dt.minute
-    result["hour_sin"] = np.sin(2 * np.pi * minutes / 1440)
-    result["hour_cos"] = np.cos(2 * np.pi * minutes / 1440)
-    result["weekday_sin"] = np.sin(2 * np.pi * result["observed_at"].dt.dayofweek / 7)
-    result["weekday_cos"] = np.cos(2 * np.pi * result["observed_at"].dt.dayofweek / 7)
-    return result
-
-
-def build_models() -> dict[str, object]:
+def score(actual: np.ndarray, predicted: np.ndarray) -> dict[str, float]:
     return {
-        "baseline_linear": Pipeline([
-            ("preprocess", build_preprocessor()),
-            ("model", LinearRegression()),
-        ]),
-        "robust_ridge": Pipeline([
-            ("preprocess", build_preprocessor()),
-            ("model", Ridge(alpha=10.0)),
-        ]),
-        "random_forest": Pipeline([
-            ("preprocess", build_preprocessor()),
-            ("model", RandomForestRegressor(
-                n_estimators=80,
-                max_depth=12,
-                min_samples_leaf=10,
-                max_features=0.5,
-                n_jobs=-1,
-                random_state=RANDOM_STATE,
-            )),
-        ]),
-        "hist_gradient_boosting": Pipeline([
-            ("preprocess", build_preprocessor(dense=True)),
-            ("model", HistGradientBoostingRegressor(
-                learning_rate=0.05,
-                max_iter=250,
-                max_leaf_nodes=31,
-                min_samples_leaf=30,
-                l2_regularization=1.0,
-                early_stopping=True,
-                validation_fraction=0.15,
-                n_iter_no_change=20,
-                random_state=RANDOM_STATE,
-            )),
-        ]),
-        "drift_robust_ensemble": RecencyWeighted(DriftRobustEnsemble(), half_life_days=RECENCY_HALF_LIFE_DAYS),
+        "mae": float(mean_absolute_error(actual, predicted)),
+        "rmse": float(np.sqrt(mean_squared_error(actual, predicted))),
+        "wape": float(np.abs(actual - predicted).sum() / max(float(actual.sum()), 1.0)),
     }
 
 
-def evaluate_model(name: str, model, train: pd.DataFrame, test: pd.DataFrame, predictors: list[str], target: str) -> tuple[dict[str, object], object, np.ndarray]:
-    started = time.perf_counter()
-    cv = TimeSeriesSplit(n_splits=5)
-    # Recency-weighted candidates need each row's timestamp; cross_validate slices it per fold.
-    fit_params = {"timestamps": train["observed_at"].to_numpy()} if isinstance(model, RecencyWeighted) else {}
-    cv_scores = cross_validate(
-        model,
-        train[predictors],
-        train[target],
-        cv=cv,
-        scoring={"mae": "neg_mean_absolute_error", "rmse": "neg_root_mean_squared_error", "r2": "r2"},
-        n_jobs=None,
-        params=fit_params,
-    )
-    model.fit(train[predictors], train[target], **fit_params)
-    predictions = np.maximum(0.0, model.predict(test[predictors]))
-    actual = test[target].to_numpy()
-    absolute_error = np.abs(actual - predictions)
-    elapsed = time.perf_counter() - started
-    result = {
-        "model": name,
-        "cv_mae_mean": float(-cv_scores["test_mae"].mean()),
-        "cv_mae_std": float(cv_scores["test_mae"].std()),
-        "cv_rmse_mean": float(-cv_scores["test_rmse"].mean()),
-        "cv_rmse_std": float(cv_scores["test_rmse"].std()),
-        "cv_r2_mean": float(cv_scores["test_r2"].mean()),
-        "cv_r2_std": float(cv_scores["test_r2"].std()),
-        "cv_recent_mae": float(-cv_scores["test_mae"][-RECENT_FOLDS:].mean()),
-        "cv_worst_mae": float(-cv_scores["test_mae"].min()),
-        "mae": float(mean_absolute_error(actual, predictions)),
-        "rmse": float(np.sqrt(mean_squared_error(actual, predictions))),
-        "r2": float(r2_score(actual, predictions)),
-        "wape": float(absolute_error.sum() / max(actual.sum(), 1.0)),
-        "training_seconds": float(elapsed),
-        "stability_score": float(cv_scores["test_mae"].std() / max(-cv_scores["test_mae"].mean(), 1.0)),
-    }
-    return result, model, predictions
+def evaluate(model: LagEnsembleForecaster, observations: pd.DataFrame, test_start: pd.Timestamp) -> tuple[pd.DataFrame, list[dict[str, object]]]:
+    """Rolling-origin test: every target is forecast from data known ``horizon`` periods earlier,
+    with the correction model fitted only on data before ``test_start``."""
+    demand = demand_matrix(observations)
+    predictions = []
+    member_rows = []
+    for horizon in HORIZONS:
+        actual = demand.loc[test_start:]
+        frames = {**model.member_forecasts(demand, horizon), MODEL_NAME: model.predict_matrix(demand, horizon)}
+        for name, frame in frames.items():
+            long = pd.DataFrame({"actual_demand": actual.stack(), "predicted_demand": frame.loc[test_start:].stack()}).dropna()
+            long["predicted_demand"] = long["predicted_demand"].clip(lower=0.0)
+            member_rows.append({"model": name, "horizon_periods": horizon, **score(long["actual_demand"].to_numpy(), long["predicted_demand"].to_numpy())})
+            if name == MODEL_NAME:
+                predictions.append(long.assign(horizon_periods=horizon))
+    test = pd.concat(predictions).reset_index()
+    test.columns = ["observed_at", "station_id", *test.columns[2:]]
+    return test, member_rows
 
 
 def main() -> None:
@@ -169,81 +85,82 @@ def main() -> None:
     if not url or not key:
         raise RuntimeError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required")
 
+    started = time.perf_counter()
     with SupabaseRestClient(url, key) as client:
-        dataset = add_features(fetch_dataset(client))
-    split_at = int(len(dataset) * TRAIN_FRACTION)
-    train = dataset.iloc[:split_at].copy()
-    test = dataset.iloc[split_at:].copy()
-    target = "demand"
-    predictors = [
-        "station_id",
-        "corridor",
-        "latitude",
-        "longitude",
-        "event_intensity",
-        "rain_forecast",
-        "rain_mm",
-        "temperature_c",
-        "temperature_forecast",
-        "hour_sin",
-        "hour_cos",
-        "weekday_sin",
-        "weekday_cos",
-    ]
-    model_results = []
-    fitted_models = {}
-    test_predictions = {}
-    for name, candidate in build_models().items():
-        result, fitted, candidate_predictions = evaluate_model(name, candidate, train, test, predictors, target)
-        model_results.append(result)
-        fitted_models[name] = fitted
-        test_predictions[name] = candidate_predictions
-    comparison = pd.DataFrame(model_results).sort_values(["cv_recent_mae", "stability_score"])
-    selected_name = str(comparison.iloc[0]["model"])
-    model = fitted_models[selected_name]
-    predictions = test_predictions[selected_name]
-    selected_result = next(result for result in model_results if result["model"] == selected_name)
+        observations = fetch_observations(client)
+    test_start = observations["observed_at"].max().floor("D") - pd.Timedelta(days=TEST_DAYS - 1)
+    train = observations[observations["observed_at"] < test_start]
+    evaluator = LagEnsembleForecaster(half_life_days=RECENCY_HALF_LIFE_DAYS).fit(train)
+    test, member_rows = evaluate(evaluator, observations, test_start)
+    actual = test["actual_demand"].to_numpy()
+    predicted = test["predicted_demand"].to_numpy()
+    overall = score(actual, predicted)
+    # Daily folds of the test window: spread across regimes, and the most recent day.
+    folds = [score(day["actual_demand"].to_numpy(), day["predicted_demand"].to_numpy()) for _, day in test.groupby(test["observed_at"].dt.floor("D"))]
+    fold_mae = np.array([fold["mae"] for fold in folds])
+    fold_rmse = np.array([fold["rmse"] for fold in folds])
+    # The deployed model refits the correction on every observation, test days included.
+    model = LagEnsembleForecaster(half_life_days=RECENCY_HALF_LIFE_DAYS).fit(observations)
+    elapsed = time.perf_counter() - started
+
+    comparison = (
+        pd.DataFrame(member_rows)
+        .groupby("model", as_index=False)[["mae", "rmse", "wape"]].mean()
+        .sort_values("wape")
+    )
+    per_horizon = {f"wape_h{row['horizon_periods']}": row["wape"] for row in member_rows if row["model"] == MODEL_NAME}
     metrics = {
         "dataset": {
-            "table": "demand_observation + context_observation + station",
-            "observations": int(len(dataset)),
-            "variables_after_join": int(dataset.shape[1]),
-            "target": target,
-            "predictors": predictors,
+            "table": "demand_observation",
+            "observations": int(len(observations)),
+            "window_start": observations["observed_at"].min().isoformat(),
+            "window_end": observations["observed_at"].max().isoformat(),
+            "target": "demand",
+            "horizons": list(HORIZONS),
         },
         "split": {
-            "method": "chronological",
-            "train_fraction": TRAIN_FRACTION,
-            "test_fraction": 1 - TRAIN_FRACTION,
+            "method": "chronological, rolling origin per horizon",
+            "test_start": test_start.isoformat(),
+            "test_days": TEST_DAYS,
             "train_rows": int(len(train)),
             "test_rows": int(len(test)),
             "random_state": None,
             "reason": "time-series leakage prevention",
         },
-        "selection": {"criterion": f"lowest MAE on the {RECENT_FOLDS} most recent temporal CV folds, then stability", "selected_model": selected_name},
-        "model_comparison": model_results,
+        "selection": {
+            "criterion": "members weighted per station by their MAE over the last error window",
+            "selected_model": MODEL_NAME,
+        },
+        "model_comparison": comparison.to_dict("records"),
         "test": {
-            **selected_result,
-            "mse": float(mean_squared_error(test[target], predictions)),
-            "accuracy": 100 * max(0.0, 1.0 - selected_result["wape"]),
+            "model": MODEL_NAME,
+            **overall,
+            **per_horizon,
+            "mse": float(overall["rmse"] ** 2),
+            "r2": float(r2_score(actual, predicted)),
+            "accuracy": 100 * max(0.0, 1.0 - overall["wape"]),
+            "cv_mae_mean": float(fold_mae.mean()),
+            "cv_mae_std": float(fold_mae.std()),
+            "cv_rmse_mean": float(fold_rmse.mean()),
+            "cv_rmse_std": float(fold_rmse.std()),
+            "cv_recent_mae": float(fold_mae[-1]),
+            "cv_worst_mae": float(fold_mae.max()),
+            "stability_score": float(fold_mae.std() / max(fold_mae.mean(), 1.0)),
+            "training_seconds": float(elapsed),
         },
     }
     exploration = {
-        "tables": ["station", "demand_observation", "context_observation"],
-        "shape": {"rows": int(dataset.shape[0]), "columns": int(dataset.shape[1])},
-        "dtypes": {column: str(dtype) for column, dtype in dataset.dtypes.items()},
-        "nulls": {column: int(value) for column, value in dataset.isna().sum().items()},
-        "duplicate_rows": int(dataset.duplicated().sum()),
-        "duplicate_station_timestamp_keys": int(
-            dataset.duplicated(["station_id", "observed_at"]).sum()
-        ),
+        "tables": ["demand_observation"],
+        "shape": {"rows": int(observations.shape[0]), "columns": int(observations.shape[1])},
+        "stations": int(observations["station_id"].nunique()),
+        "duplicate_station_timestamp_keys": 0,
         "target_distribution": {
-            "count": int(dataset[target].count()),
-            "mean": float(dataset[target].mean()),
-            "std": float(dataset[target].std()),
-            "min": float(dataset[target].min()),
-            "median": float(dataset[target].median()),
-            "max": float(dataset[target].max()),
+            "count": int(observations["demand"].count()),
+            "mean": float(observations["demand"].mean()),
+            "std": float(observations["demand"].std()),
+            "min": float(observations["demand"].min()),
+            "median": float(observations["demand"].median()),
+            "max": float(observations["demand"].max()),
         },
     }
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
@@ -254,40 +171,32 @@ def main() -> None:
             "model": model,
             "metrics": metrics,
             "exploration": exploration,
-            "target": target,
-            "predictors": predictors,
+            "target": "demand",
             "split": metrics["split"],
         },
         ARTIFACT_DIR / "model_and_metrics.joblib",
     )
     comparison.to_csv(ARTIFACT_DIR / "model_comparison.csv", index=False)
-    pd.DataFrame(
-        {
-            "observed_at": test["observed_at"].astype(str),
-            "station_id": test["station_id"],
-            "actual_demand": test[target],
-            "predicted_demand": predictions,
-        }
-    ).to_csv(ARTIFACT_DIR / "predictions.csv", index=False)
+    test.assign(observed_at=test["observed_at"].map(pd.Timestamp.isoformat))[
+        ["observed_at", "station_id", "horizon_periods", "actual_demand", "predicted_demand"]
+    ].to_csv(ARTIFACT_DIR / "predictions.csv", index=False)
     tracking_params = {
-        "model_name": selected_name,
-        "target": target,
-        "predictors": predictors,
-        "candidate_models": list(build_models().keys()),
-        "train_fraction": TRAIN_FRACTION,
-        "test_fraction": 1 - TRAIN_FRACTION,
-        "cv_splits": 5,
-        "random_state": RANDOM_STATE,
+        "model_name": MODEL_NAME,
+        "target": "demand",
+        "horizons": list(HORIZONS),
+        "candidate_models": comparison["model"].tolist(),
+        "test_days": TEST_DAYS,
         "recency_half_life_days": RECENCY_HALF_LIFE_DAYS,
-        "selection_recent_folds": RECENT_FOLDS,
+        "error_window": model.error_window,
+        "weight_power": model.weight_power,
         "dataset_tables": metrics["dataset"]["table"],
         "dataset_rows": metrics["dataset"]["observations"],
-        "window_start": dataset["observed_at"].min().isoformat(),
-        "window_end": dataset["observed_at"].max().isoformat(),
+        "window_start": metrics["dataset"]["window_start"],
+        "window_end": metrics["dataset"]["window_end"],
     }
     tracking_tags = {
         "project": "pulso-transmi",
-        "model_type": selected_name,
+        "model_type": MODEL_NAME,
         "environment": os.getenv("MLFLOW_ENVIRONMENT", "development"),
         "dataset_version": os.getenv("DATASET_VERSION", "supabase-current"),
         "training_type": os.getenv("TRAINING_TYPE", "baseline-or-drift-retrain"),

@@ -124,6 +124,22 @@ def sync_stations(db: SupabaseRestClient, stations: pd.DataFrame) -> int:
     return count
 
 
+def combine_observations(starter: pd.DataFrame, stream: pd.DataFrame, start: pd.Timestamp | None) -> pd.DataFrame:
+    """Starter and competition-stream observations from ``start`` on; the stream wins on repeated keys.
+
+    Older rows are already stored, and keeping them would make every run re-read the whole stream.
+    """
+    columns = ["station_id", "observed_at", "demand"]
+    frames = [frame[columns] for frame in (starter, stream) if not frame.empty]
+    if not frames:
+        return pd.DataFrame(columns=columns)
+    combined = pd.concat(frames, ignore_index=True)
+    if start is not None:
+        combined = combined[combined["observed_at"] >= start]
+    combined["station_id"] = combined["station_id"].astype(str).str.zfill(5)
+    return combined.drop_duplicates(["station_id", "observed_at"], keep="last").reset_index(drop=True)
+
+
 def sync_observations(db: SupabaseRestClient, table: str, data_cut_id: int, frame: pd.DataFrame, columns: list[str]) -> tuple[int, int, int]:
     if frame.empty:
         return 0, 0, 0
@@ -213,6 +229,12 @@ def main() -> None:
                 LOG.info("Extrayendo API desde %s", start_text or "el inicio disponible")
                 stations = api.stations()
                 observations = api.observations_dataframe(start=start_text)
+                # /v1/observations ends with the starter dataset; newer demand only arrives through the
+                # stream. Context stopped there too, so the stream starts from the latest demand alone.
+                stream_start = last_demand - OVERLAP if last_demand is not None else None
+                stream = api.stream_observations_dataframe()
+                LOG.info("Stream de competencia: %d registros; se sincronizan desde %s", len(stream), stream_start)
+                observations = combine_observations(observations, stream, stream_start)
                 context = api.context_dataframe(start=start_text)
                 received = len(stations) + len(observations) + len(context)
                 LOG.info("Registros obtenidos: estaciones=%d demanda=%d contexto=%d", len(stations), len(observations), len(context))

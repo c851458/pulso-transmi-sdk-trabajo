@@ -78,7 +78,8 @@ futuro y pasado y genera métricas engañosas.
 | `GET` | `/health` | Estado básico |
 | `GET` | `/v1/meta` | Versión, rango, hashes y enlaces |
 | `GET` | `/v1/stations` | Catálogo geográfico |
-| `GET` | `/v1/observations` | Demanda paginada |
+| `GET` | `/v1/observations` | Demanda paginada (dataset inicial, termina el 2026-09-08) |
+| `GET` | `/v1/stream/observations` | Demanda de la competencia publicada después, paginada por cursor |
 | `GET` | `/v1/context` | Clima y eventos |
 | `GET` | `/v1/downloads/{filename}` | Descarga completa |
 
@@ -131,10 +132,16 @@ Nunca escribas API keys, contraseñas de Supabase ni tokens dentro del código.
   [docs/work-log-2026-09-30.md](docs/work-log-2026-09-30.md).
 - `model_drift.yml` registra PSI como alerta y reentrena con el mismo
   criterio de accuracy y ratio de WAPE ([docs/model-drift.md](docs/model-drift.md)).
-- Entre los candidatos está `drift_robust_ensemble`, un ensamble con pesos por
-  recencia que se adapta a cambios fuertes de drift; el ganador se elige por su
-  error en los periodos más recientes
-  ([docs/model-robustness-report.md](docs/model-robustness-report.md)).
+- La ingesta guarda también `/v1/stream/observations`; sin él, Supabase no tenía
+  demanda posterior al 2026-09-08 y cada reentrenamiento producía el mismo modelo.
+- El modelo es `lag_adaptive_ensemble` (`src/lag_model.py`): pronosticadores con
+  lags (persistencia y estacionales de 4 h, 1 día y 1 semana) más una corrección
+  con gradient boosting, ponderados por estación según su error en las últimas
+  4 h. Así sigue los cambios de régimen del stream sin esperar a reentrenar.
+  Pronostica desde la demanda observada hasta el corte del ciclo (horizonte de
+  15–60 min) y no usa contexto, porque la API no publica contexto posterior al
+  dataset inicial. El detalle está en
+  [docs/work-log-2026-10-02.md](docs/work-log-2026-10-02.md).
 
 ## Supabase y Vercel
 

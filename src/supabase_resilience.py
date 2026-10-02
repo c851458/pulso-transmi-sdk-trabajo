@@ -103,10 +103,12 @@ class SupabaseRestClient:
     def rows(self, table: str, **params: str) -> list[dict[str, Any]]:
         return self.request("GET", table, params=params)
 
-    def get_all(self, table: str, select: str, *, page_size: int = 1_000) -> list[dict[str, Any]]:
+    def get_all(self, table: str, select: str, *, page_size: int = 1_000, order: str | None = None) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
-        for offset in range(0, 100_000, page_size):
-            page = self.rows(table, select=select, limit=str(page_size), offset=str(offset))
+        # Offset paging needs a stable order, or rows can repeat or go missing between pages.
+        ordering = {"order": order} if order else {}
+        for offset in range(0, 500_000, page_size):
+            page = self.rows(table, select=select, limit=str(page_size), offset=str(offset), **ordering)
             rows.extend(page)
             if len(page) < page_size:
                 return rows

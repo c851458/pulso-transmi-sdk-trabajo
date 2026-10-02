@@ -19,6 +19,8 @@ import numpy as np
 
 from pulso_transmi import PulsoTransmiClient
 from src.accuracy import baseline_wape, recent_accuracy
+from src.drift import paged_since
+from src.lag_model import HISTORY_PERIODS, PERIOD, LagEnsembleForecaster
 from src.mlflow_tracking import load_metadata
 from src.supabase_resilience import SupabaseRestClient
 
@@ -330,9 +332,32 @@ def update_sync_status_state(db: SupabaseRestClient, status: str, *, error: str 
         raise
 
 
-def forecast_open_cycle(api: PulsoTransmiClient, cycle: dict[str, Any], artifact: bytes) -> list[dict[str, Any]]:
+def forecast_with_lags(
+    model: LagEnsembleForecaster, db: SupabaseRestClient, cycle: dict[str, Any], stations: pd.DataFrame
+) -> list[dict[str, Any]]:
+    """Forecast the cycle targets from the demand observed up to its cutoff (ingested just before)."""
+    cutoff = pd.Timestamp(cycle["data_cutoff"])
+    history = paged_since(db, "demand_observation", "station_id,observed_at,demand", cutoff - HISTORY_PERIODS * PERIOD)
+    history = history[history["observed_at"] <= cutoff] if not history.empty else history
+    if history.empty:
+        raise RuntimeError("No demand observations available before the cycle cutoff")
+    targets = [pd.Timestamp(target["target_at"]) for target in cycle["targets"]]
+    forecast = model.forecast(history, targets, stations["station_id"].astype(str))
+    return [
+        {"station_id": row["station_id"], "target_at": row["target_at"].isoformat(), "value": max(0.0, float(row["value"]))}
+        for row in forecast.to_dict("records")
+    ]
+
+
+def forecast_open_cycle(
+    api: PulsoTransmiClient, cycle: dict[str, Any], artifact: bytes, db: SupabaseRestClient | None = None
+) -> list[dict[str, Any]]:
     bundle = __import__("joblib").load(ARTIFACT_DIR / "model_and_metrics.joblib")
     stations = api.stations()
+    if isinstance(bundle["model"], LagEnsembleForecaster):
+        if db is None:
+            raise RuntimeError("The lag model needs Supabase access to read recent demand")
+        return forecast_with_lags(bundle["model"], db, cycle, stations)
     context = api.context_dataframe(end=cycle["data_cutoff"])
     if context.empty:
         raise RuntimeError("No context available at the cycle cutoff")
@@ -481,7 +506,7 @@ def publish(
             "station_id": str(row["station_id"]).zfill(5),
             "target_at": row["observed_at"],
             "generated_at": now.isoformat(),
-            "horizon_periods": 1,
+            "horizon_periods": int(row.get("horizon_periods", 1)),
             "prediction": max(0, float(row["predicted_demand"])),
             "actual_value": float(row["actual_demand"]),
         }
@@ -521,7 +546,7 @@ def publish(
         cycle_id = str(cycle.get("cycle_id") or cycle["id"])
         print(f"[INFO] Ciclo: {cycle_id}")
         print(f"[INFO] Estado del ciclo: {cycle.get('status', 'OPEN')}")
-        submission_predictions = forecast_open_cycle(api, cycle, artifact)
+        submission_predictions = forecast_open_cycle(api, cycle, artifact, db)
         if not submission_predictions:
             raise RuntimeError("Inference generated no predictions")
         target_count = len({str(target["target_at"]) for target in cycle.get("targets", [])})

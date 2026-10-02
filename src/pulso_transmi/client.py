@@ -235,6 +235,14 @@ class PulsoTransmiClient:
             frame["station_id"] = frame["station_id"].astype("string")
         return frame
 
+    def stream_observations_dataframe(self, *, page_size: int = 5000) -> pd.DataFrame:
+        """Competition observations released after the starter dataset, in release order."""
+        frame = pd.DataFrame(self._all_pages("/v1/stream/observations", {"limit": page_size}))
+        if not frame.empty:
+            frame["observed_at"] = pd.to_datetime(frame["observed_at"], utc=True)
+            frame["station_id"] = frame["station_id"].astype("string")
+        return frame
+
     def context_dataframe(
         self,
         *,
