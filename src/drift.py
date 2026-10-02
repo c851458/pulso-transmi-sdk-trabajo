@@ -126,9 +126,12 @@ def evaluate(env: dict[str, str], db: SupabaseRestClient | None = None) -> dict[
     for feature in numeric_features:
         reference_frame = reference_demand if feature == "demand" else reference_context
         current_frame = current_demand if feature == "demand" else current_context
-        score = psi(reference_frame[feature], current_frame[feature])
+        score = psi(reference_frame[feature], current_frame[feature]) if feature in current_frame and feature in reference_frame else float("nan")
+        if math.isnan(score):
+            # No data in one of the windows (context stopped with the starter dataset); NaN is not valid JSON.
+            continue
         feature_scores[feature] = score
-        if not math.isnan(score) and score >= PSI_THRESHOLD:
+        if score >= PSI_THRESHOLD:
             feature_alerts.append(feature)
 
     model = latest_model(db)

@@ -33,18 +33,21 @@ SEASONS = (16, 96, 672)
 # Observations needed before the first target: the weekly lag, its horizon offset and the error window.
 HISTORY_PERIODS = max(SEASONS) + max(HORIZONS) + 64
 RANDOM_STATE = 42
-FEATURES = [
-    "persistence",
-    "mean_1h",
-    "mean_4h",
-    *[f"seasonal_{season}" for season in SEASONS],
-    *[f"seasonal_{season}_delta" for season in SEASONS],
-    "hour_sin",
-    "hour_cos",
-    "weekday",
-    "horizon",
-    "station_code",
-]
+
+
+def feature_names(seasons: tuple[int, ...]) -> list[str]:
+    return [
+        "persistence",
+        "mean_1h",
+        "mean_4h",
+        *[f"seasonal_{season}" for season in seasons],
+        *[f"seasonal_{season}_delta" for season in seasons],
+        "hour_sin",
+        "hour_cos",
+        "weekday",
+        "horizon",
+        "station_code",
+    ]
 
 
 def demand_matrix(observations: pd.DataFrame) -> pd.DataFrame:
@@ -62,11 +65,11 @@ def demand_matrix(observations: pd.DataFrame) -> pd.DataFrame:
     return wide.asfreq(FREQ).astype(float)
 
 
-def lag_members(demand: pd.DataFrame, horizon: int) -> dict[str, pd.DataFrame]:
+def lag_members(demand: pd.DataFrame, horizon: int, seasons: tuple[int, ...] = SEASONS) -> dict[str, pd.DataFrame]:
     """Each member's forecast for every row (target time), using only data known ``horizon`` periods earlier."""
     last = demand.shift(horizon)
     members = {"persistence": last, "mean_1h": last.rolling(4).mean()}
-    for season in SEASONS:
+    for season in seasons:
         members[f"seasonal_{season}"] = demand.shift(season)
         # Latest value plus the change the series had over the same span one season ago.
         members[f"seasonal_{season}_delta"] = last + demand.shift(season) - demand.shift(season + horizon)
@@ -80,13 +83,26 @@ class LagEnsembleForecaster(BaseEstimator, RegressorMixin):
     target from the ``error_window`` periods that end at the forecast cutoff.
     """
 
-    def __init__(self, half_life_days: float = 7.0, error_window: int = 16, weight_power: float = 4.0):
+    # Class-level defaults keep artifacts pickled before these parameters existed loadable.
+    seasons: tuple[int, ...] = SEASONS
+    train_horizons: tuple[int, ...] = HORIZONS
+
+    def __init__(
+        self,
+        half_life_days: float = 7.0,
+        error_window: int = 16,
+        weight_power: float = 4.0,
+        seasons: tuple[int, ...] = SEASONS,
+        train_horizons: tuple[int, ...] = HORIZONS,
+    ):
         self.half_life_days = half_life_days
         self.error_window = error_window
         self.weight_power = weight_power
+        self.seasons = seasons
+        self.train_horizons = train_horizons
 
     def _features(self, demand: pd.DataFrame, horizon: int) -> pd.DataFrame:
-        columns = {name: frame.stack(future_stack=True) for name, frame in lag_members(demand, horizon).items()}
+        columns = {name: frame.stack(future_stack=True) for name, frame in lag_members(demand, horizon, self.seasons).items()}
         columns["mean_4h"] = demand.shift(horizon).rolling(16).mean().stack(future_stack=True)
         features = pd.DataFrame(columns)
         features.index.names = ["observed_at", "station_id"]
@@ -104,7 +120,7 @@ class LagEnsembleForecaster(BaseEstimator, RegressorMixin):
         demand = demand_matrix(observations)
         self.stations_ = list(demand.columns)
         frames = []
-        for horizon in HORIZONS:
+        for horizon in self.train_horizons:
             features = self._features(demand, horizon)
             features["target"] = demand.stack(future_stack=True).reindex(features.index)
             frames.append(features.dropna(subset=["target", "persistence"]))
@@ -116,16 +132,16 @@ class LagEnsembleForecaster(BaseEstimator, RegressorMixin):
             max_iter=300,
             min_samples_leaf=40,
             random_state=RANDOM_STATE,
-        ).fit(train[FEATURES], train["target"] - train["persistence"], sample_weight=weights)
+        ).fit(train[feature_names(self.seasons)], train["target"] - train["persistence"], sample_weight=weights)
         self.training_end_ = demand.index.max()
         return self
 
     def member_forecasts(self, demand: pd.DataFrame, horizon: int) -> dict[str, pd.DataFrame]:
-        members = lag_members(demand, horizon)
+        members = lag_members(demand, horizon, self.seasons)
         features = self._features(demand, horizon).dropna(subset=["persistence"])
         corrected = pd.Series(np.nan, index=features.index)
         if not features.empty:
-            corrected = features["persistence"] + self.correction_.predict(features[FEATURES])
+            corrected = features["persistence"] + self.correction_.predict(features[feature_names(self.seasons)])
         members["boosted_correction"] = corrected.unstack().reindex(index=demand.index, columns=demand.columns)
         return members
 
