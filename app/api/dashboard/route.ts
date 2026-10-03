@@ -80,6 +80,8 @@ export async function GET() {
       model: active ? { id: active.id, version: active.version, status: active.status, algorithm: active.algorithm, trainedAt: active.trained_at, mlflowRunId: active.mlflow_run_id, mlflowModelName: active.mlflow_model_name, mlflowModelVersion: active.mlflow_model_version } : null,
       training: activeTraining ? { metrics: activeTraining.metrics ?? {}, startedAt: activeTraining.started_at, finishedAt: activeTraining.finished_at } : null,
       previousTraining: previousTraining ? { metrics: previousTraining.metrics ?? {}, version: previousModel?.version, trainedAt: previousModel?.trained_at } : null,
+      // Actual retrains (pipeline schedule, accuracy/WAPE gate or drift), not just the drift recommendation.
+      retraining: { last: trainingTimeline.at(-1)?.started_at ?? active?.trained_at ?? null, last24h: trainingTimeline.filter((row) => Date.parse(row.started_at) >= Date.now() - 86400000).length, scheduleHours: number(process.env.RETRAIN_SCHEDULE_HOURS) ?? 1 },
       timeline: {
         days: TIMELINE_DAYS,
         retrains: trainingTimeline.map((row) => ({ date: row.started_at, model: row.model_id, wape: number(row.wape), mae: number(row.mae), rmse: number(row.rmse), r2: number(row.r2), accuracy: number(row.accuracy) })),
