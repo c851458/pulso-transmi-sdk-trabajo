@@ -127,7 +127,8 @@ Nunca escribas API keys, contraseñas de Supabase ni tokens dentro del código.
 - El modelo **se reentrena si su accuracy reciente baja de 79 %**
   (`RETRAIN_ACCURACY_THRESHOLD`) **o si su WAPE reciente empeora un 25 % o más**
   frente al WAPE de prueba (`DRIFT_PERFORMANCE_RATIO` = 1.25), con al menos 1 h entre reentrenamientos
-  (`RETRAIN_INTERVAL_HOURS`). Si no, se publica con el modelo activo.
+  (`RETRAIN_INTERVAL_HOURS`). Aunque las métricas estén bien, **también se reentrena
+  cada hora** (`RETRAIN_SCHEDULE_HOURS` = 1; `0` lo desactiva). Si no, se publica con el modelo activo.
   La medición está en `src/accuracy.py`; el detalle, en
   [docs/work-log-2026-09-30.md](docs/work-log-2026-09-30.md).
 - `model_drift.yml` registra PSI como alerta y reentrena con el mismo

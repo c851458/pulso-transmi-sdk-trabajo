@@ -18,9 +18,12 @@ def test_retrains_without_active_model() -> None:
     assert retrain_decision({"id": 1, "trained_at": "2026-09-30T11:59:00+00:00"}, 90.0, NOW, 79, 1)[0]
 
 
-def test_keeps_model_while_accuracy_is_at_or_above_threshold() -> None:
-    assert not retrain_decision(model(), 86.8, NOW, 79, 1)[0]
-    assert not retrain_decision(model(), 79.0, NOW, 79, 1)[0]
+YOUNG = "2026-09-30T11:30:00+00:00"
+
+
+def test_keeps_young_model_while_accuracy_is_at_or_above_threshold() -> None:
+    assert not retrain_decision(model(YOUNG), 86.8, NOW, 79, 1)[0]
+    assert not retrain_decision(model(YOUNG), 79.0, NOW, 79, 1)[0]
 
 
 def test_retrains_when_accuracy_drops_below_threshold() -> None:
@@ -29,8 +32,17 @@ def test_retrains_when_accuracy_drops_below_threshold() -> None:
     assert "78.50%" in reason
 
 
-def test_keeps_model_when_accuracy_is_unavailable() -> None:
-    assert not retrain_decision(model(), None, NOW, 79, 1)[0]
+def test_keeps_young_model_when_accuracy_is_unavailable() -> None:
+    assert not retrain_decision(model(YOUNG), None, NOW, 79, 1)[0]
+
+
+def test_retrains_on_schedule_even_with_good_metrics() -> None:
+    retrain, reason = retrain_decision(model("2026-09-30T11:00:00+00:00"), 91.9, NOW, 79, 1, wape_ratio=0.59, schedule_hours=1)
+    assert retrain
+    assert reason.startswith("scheduled retrain")
+    assert retrain_decision(model(), None, NOW, 79, 1, schedule_hours=1)[0]
+    assert not retrain_decision(model(YOUNG), 91.9, NOW, 79, 1, wape_ratio=0.59, schedule_hours=1)[0]
+    assert not retrain_decision(model(), 91.9, NOW, 79, 1, wape_ratio=0.59, schedule_hours=0)[0]
 
 
 def test_low_accuracy_waits_for_minimum_interval() -> None:
@@ -80,7 +92,7 @@ def test_retrains_when_wape_degrades_even_with_good_accuracy() -> None:
     assert retrain
     assert "WAPE ratio 1.30" in reason
     assert retrain_decision(model(), 86.0, NOW, 79, 1, wape_ratio=1.25, ratio_threshold=1.25)[0]
-    assert not retrain_decision(model(), 86.0, NOW, 79, 1, wape_ratio=1.10, ratio_threshold=1.25)[0]
+    assert not retrain_decision(model(YOUNG), 86.0, NOW, 79, 1, wape_ratio=1.10, ratio_threshold=1.25)[0]
 
 
 def test_wape_trigger_waits_for_minimum_interval() -> None:

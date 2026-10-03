@@ -34,6 +34,8 @@ RETRAIN_ACCURACY_THRESHOLD = float(os.getenv("RETRAIN_ACCURACY_THRESHOLD", "79")
 RETRAIN_INTERVAL_HOURS = float(os.getenv("RETRAIN_INTERVAL_HOURS", "1"))
 # Retrain also when production WAPE degrades this much versus the model's test WAPE (1.25 = 25 % worse).
 RETRAIN_WAPE_RATIO = float(os.getenv("DRIFT_PERFORMANCE_RATIO", "1.25"))
+# Retrain on schedule once the active model is this old, even when accuracy and WAPE are fine (0 disables).
+RETRAIN_SCHEDULE_HOURS = float(os.getenv("RETRAIN_SCHEDULE_HOURS", "1"))
 LOG = logging.getLogger("pulso.pipeline")
 
 
@@ -100,29 +102,36 @@ def retrain_decision(
     interval_hours: float = RETRAIN_INTERVAL_HOURS,
     wape_ratio: float | None = None,
     ratio_threshold: float = RETRAIN_WAPE_RATIO,
+    schedule_hours: float = RETRAIN_SCHEDULE_HOURS,
 ) -> tuple[bool, str]:
     """Retrain when recent accuracy falls below the threshold, when production WAPE
-    reaches ratio_threshold x the test WAPE, or when no model exists."""
+    reaches ratio_threshold x the test WAPE, when the model is schedule_hours old,
+    or when no model exists."""
     if not usable_model(active_model):
         return True, "no usable active model"
+    trained_at = pd.Timestamp(active_model["trained_at"])
+    if trained_at.tzinfo is None:
+        trained_at = trained_at.tz_localize("UTC")
+    age = now - trained_at.to_pydatetime()
     causes = []
     if accuracy is not None and accuracy < threshold:
         causes.append(f"accuracy {accuracy:.2f}% < {threshold:g}%")
     if wape_ratio is not None and wape_ratio >= ratio_threshold:
         causes.append(f"WAPE ratio {wape_ratio:.2f} >= {ratio_threshold:g}")
-    if not causes:
-        if accuracy is None and wape_ratio is None:
-            return False, "recent accuracy unavailable; keeping the active model"
-        measured = [f"accuracy {accuracy:.2f}% >= {threshold:g}%" if accuracy is not None else "accuracy n/a"]
-        measured.append(f"WAPE ratio {wape_ratio:.2f} < {ratio_threshold:g}" if wape_ratio is not None else "WAPE ratio n/a")
-        return False, "; ".join(measured)
-    reason = " and ".join(causes)
-    trained_at = pd.Timestamp(active_model["trained_at"])
-    if trained_at.tzinfo is None:
-        trained_at = trained_at.tz_localize("UTC")
-    if now - trained_at.to_pydatetime() < timedelta(hours=interval_hours):
-        return False, f"{reason} but the model is younger than {interval_hours:g}h"
-    return True, reason
+    if causes:
+        reason = " and ".join(causes)
+        if age < timedelta(hours=interval_hours):
+            return False, f"{reason} but the model is younger than {interval_hours:g}h"
+        return True, reason
+    if accuracy is None and wape_ratio is None:
+        measured = "recent accuracy unavailable"
+    else:
+        parts = [f"accuracy {accuracy:.2f}% >= {threshold:g}%" if accuracy is not None else "accuracy n/a"]
+        parts.append(f"WAPE ratio {wape_ratio:.2f} < {ratio_threshold:g}" if wape_ratio is not None else "WAPE ratio n/a")
+        measured = "; ".join(parts)
+    if schedule_hours > 0 and age >= timedelta(hours=schedule_hours):
+        return True, f"scheduled retrain: model is {age.total_seconds() / 3600:.1f}h old (>= {schedule_hours:g}h); {measured}"
+    return False, f"{measured}; keeping the active model"
 
 
 def _validate_finite(value: Any, path: str) -> None:

@@ -30,7 +30,9 @@ reentrena si baja de `RETRAIN_ACCURACY_THRESHOLD` (79 %) o, aunque la accuracy
 no baje, si el WAPE reciente empeora un 25 % o más frente al WAPE de prueba del
 modelo (`DRIFT_PERFORMANCE_RATIO` = 1.25). El pipeline exige
 además `RETRAIN_INTERVAL_HOURS` (1 h) desde el último entrenamiento; este
-workflow, `RETRAIN_COOLDOWN_HOURS`. Detalle en
+workflow, `RETRAIN_COOLDOWN_HOURS`. Además, el pipeline reentrena por calendario
+cuando el modelo activo cumple `RETRAIN_SCHEDULE_HOURS` (1 h; `0` lo desactiva),
+aunque la accuracy y el WAPE estén dentro de los umbrales. Detalle en
 [work-log-2026-09-30.md](work-log-2026-09-30.md).
 
 ## Umbrales por defecto

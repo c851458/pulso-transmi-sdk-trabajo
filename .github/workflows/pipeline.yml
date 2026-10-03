@@ -6,7 +6,8 @@ on:
   # El modelo se reentrena cuando su accuracy reciente baja de
   # RETRAIN_ACCURACY_THRESHOLD (79 % por defecto) o cuando su WAPE en producción llega a
   # DRIFT_PERFORMANCE_RATIO (1.25) veces el WAPE de prueba, con al menos RETRAIN_INTERVAL_HOURS
-  # (1 h) entre reentrenamientos; en las demás ejecuciones se publica con el modelo activo.
+  # (1 h) entre reentrenamientos. Además, aunque las métricas estén bien, se reentrena cada
+  # RETRAIN_SCHEDULE_HOURS (1 h) de edad del modelo; en las demás ejecuciones se publica con el modelo activo.
   workflow_dispatch:
     inputs:
       force_retrain:
@@ -90,6 +91,7 @@ jobs:
           MLFLOW_ENVIRONMENT: production
           RETRAIN_ACCURACY_THRESHOLD: ${{ vars.RETRAIN_ACCURACY_THRESHOLD || '79' }}
           RETRAIN_INTERVAL_HOURS: ${{ vars.RETRAIN_INTERVAL_HOURS || '1' }}
+          RETRAIN_SCHEDULE_HOURS: ${{ vars.RETRAIN_SCHEDULE_HOURS || '1' }}
           DRIFT_PERFORMANCE_RATIO: ${{ vars.DRIFT_PERFORMANCE_RATIO || '1.25' }}
         run: python -u -m src.pipeline ${{ inputs.force_retrain == true && '--force-retrain' || '' }}
 
